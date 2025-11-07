@@ -68,14 +68,14 @@ Resources:
     Properties:
       ApiId: !Ref HttpApi
       RouteKey: 'GET /health'
-      Target: !Sub 'integrations/${Integration.Id}'
+      Target: !Sub 'integrations/${Integration}'
 
   RouteConfig:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref HttpApi
       RouteKey: 'GET /api/config'
-      Target: !Sub 'integrations/${Integration.Id}'
+      Target: !Sub 'integrations/${Integration}' 
 
   Stage:
     Type: AWS::ApiGatewayV2::Stage
@@ -90,7 +90,7 @@ Resources:
       FunctionName: !Ref LambdaFunction
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub 'arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/*'
+      SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*/*/*"
 
 Outputs:
   ApiBaseUrl:

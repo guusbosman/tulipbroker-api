@@ -1,0 +1,66 @@
+# === Python ===
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+build/
+dist/
+.eggs/
+.Python
+env/
+venv/
+ENV/
+.venv/
+.env
+pip-wheel-metadata/
+__pypackages__/
+
+# === AWS Lambda Packaging ===
+package.zip
+lambda-package/
+.aws-sam/
+*.zip
+*.tar.gz
+
+# === Logs & Temp ===
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+
+# === VS Code ===
+.vscode/
+.history/
+*.code-workspace
+
+# === OS Files ===
+Thumbs.db
+Desktop.ini
+
+# === Credentials / Secrets ===
+.aws/
+*.pem
+*.key
+*.crt
+secrets.json
+.env.*
+
+# === Node / Frontend Artifacts (if any shared code) ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dist/
+
+# === Testing ===
+.coverage
+.pytest_cache/
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+coverage.xml
