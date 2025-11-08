@@ -25,7 +25,7 @@
 
 ## 4) Lifecycle (Happy Path)
 1. **Submit** → Validate → Conditional write to `Orders` (DDB) → enqueue `OrderAccepted` to SQS FIFO (dedupe) → 201 to client.
-2. **Match** → Consume events in order → update in‑memory book (Redis snapshot optional) → if cross, emit `TradeExecuted` → persist to `Trades` (DDB) → publish to stream/WebSocket.
+2. **Match – Phase 1 (SimFill)** → Lambda/Step Functions consumer reads FIFO, deterministically decides fills/cancels (respecting price/time rules), persists results to `Orders`/`Trades` (DDB), then publishes events/WebSocket notifications. **Phase 2** swaps in the real matcher (ECS/EKS) without changing external contracts.
 3. **Cancel** → Conditional update order status in DDB if still open → emit `OrderCancelled`.
 
 ## 5) Idempotency & Deduplication Rules
@@ -41,6 +41,7 @@
 - **Partial fills** allowed; remaining qty stays on book unless TIF=IOC.
 - **Order states**: `PENDING → ACCEPTED → (OPEN | CANCELLED | FILLED | PARTIALLY_FILLED)`.
 - **Fairness**: FIFO within price level by `acceptedAt` (the timestamp when DDB write succeeded), not client‑clock.
+- **Phase 1 SimFill**: Simulator MUST be deterministic per order (seed = orderId/idempotency hash), persist trades before emitting, and still honor all invariants above so recordings stay valid when the real engine arrives.
 
 ## 7) Multi‑Region Consistency
 - **Model A (default)**: Single logical shard with *one active Region as leader*. Followers accept reads, forward writes, and mirror state via **DynamoDB Global Tables**.
@@ -49,8 +50,8 @@
 
 ## 8) Storage Model
 - **DynamoDB Global Tables**
-  - `Orders(pk, sk, status, side, qty, price, filledQty, idempotencyKey, clientId, createdAt, region)`
-  - `Trades(pk=TRADE#id, sk, buyOrderId, sellOrderId, price, qty, ts, region)`
+  - `Orders(pk, sk, status, side, qty, price, filledQty, idempotencyKey, clientId, createdAt, region, acceptedAz)`
+  - `Trades(pk=TRADE#id, sk, buyOrderId, sellOrderId, price, qty, ts, region, fillAz)`
   - **Streams** feed reconciliation & analytics.
 - **Redis (ElastiCache)**: optional snapshot of top‑of‑book; pub/sub for fanout. Cache misses are OK.
 - **SQS FIFO**: ordered event bus per symbol/shard; consumers scale by `MessageGroupId`.

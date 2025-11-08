@@ -2,12 +2,18 @@ for backend tech stack, I want to use Lambda where possible, written in Python
 
 Backend architecture (single-market overview — multi-Region aware)
 
+Phase plan:
+- **Phase 1 (SimFill)**: keep the Lambda-first ingest path, persist to DynamoDB, and consume SQS FIFO with a Lambda/Step Functions “simulated fill” worker that deterministically emits `TradeExecuted` / `OrderCancelled` events. No real order book yet, but all downstream contracts stay intact.
+- **Phase 2 (Real Matcher)**: swap the simulator with the ECS/EKS matching engine + Redis snapshots without changing external interfaces.
+
 Clients → CloudFront → Route53 latency routing
 Per Region:
 
-API Gateway (WebSocket + HTTP) → ECS/Fargate (matching façade)
+API Gateway (WebSocket + HTTP) → Lambda façade (Phase 1) / ECS/Fargate façade (Phase 2)
 
-Matching engine (ECS/EKS): maintains local order book, executes matches.
+Phase 1 simulated fill worker (Lambda or Step Functions): consumes SQS FIFO, applies deterministic fill/cancel logic, writes trades/orders back to DynamoDB, and publishes events.
+
+Matching engine (ECS/EKS — Phase 2): maintains local order book, executes matches.
 
 Durable storage:
 
@@ -55,7 +61,7 @@ Datastore throttling (DynamoDB throttles)
 
 Writes slow down; SQS backlog increases.
 
-UI: “backpressure” banner, queued events count rising, and visible latency increase for order acceptance.
+UI: “backpressure” banner, queued events count rising, and visible latency increase for order acceptance. In **Phase 1**, SimFill backlogs surface as “Awaiting simulated fill” badges.
 
 Matching engine CPU spike (simulate via FIS)
 
@@ -79,9 +85,9 @@ For each experiment, watch: order latency, queued events count, trade tape diver
 
 Data model & events (suggested)
 
-Orders table (DDB): pk=ORDER#<id> attrs: client, side, qty, price, status, region, seq, idempotencyKey
+Orders table (DDB): pk=ORDER#<id> attrs: client, side, qty, price, status, region, acceptedAz, seq, idempotencyKey, simulationSeed (Phase 1)
 
-Trades table (DDB): pk=TRADE#<id> attrs: buyOrder, sellOrder, qty, price, timestamp, region
+Trades table (DDB): pk=TRADE#<id> attrs: buyOrder, sellOrder, qty, price, timestamp, region, fillAz
 
 Events stream: ordered market events EVT#<ts>#<id> pushed to SQS FIFO for ordered processing
 

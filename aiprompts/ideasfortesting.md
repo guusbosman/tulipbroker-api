@@ -39,6 +39,7 @@ Create **FIS templates** that simulate the failures you care about (scoped by ta
 * **Network impairment**: blackhole route in a test subnet; inject API Gateway latency.
 * **Data throttling**: reduce DynamoDB capacity in pre-prod or add artificial write delay via a feature-flagged Lambda.
 * **Regional failover** (pre-prod only): take the regional endpoint unhealthy and verify Route 53 + client reconnection.
+* **Phase 1 SimFill stalls**: throttle or stop the simulated fill Lambda/Step Functions worker, force DLQ replays, and verify UI shows “Awaiting simulated fill” while queues drain.
 
 All templates must include **stop conditions** (e.g., `TargetTrackingScaling` alarms, `5XX` rate, `Latency p95`) so experiments abort automatically if things go sideways.
 
@@ -46,8 +47,9 @@ All templates must include **stop conditions** (e.g., `TargetTrackingScaling` al
 
 * **API SLOs**: CloudWatch metric math on p95/p99 latency, 4xx/5xx, successful matches per second.
 * **Client-visible SLOs**: Synthetics step success, time-to-first-fill, reconnect time.
-* **Data integrity**: Step Functions task runs **consistency queries** (e.g., replay events from SQS/DDB Streams into a validator Lambda; assert no duplicate fills, monotonic sequences).
+* **Data integrity**: Step Functions task runs **consistency queries** (e.g., replay events from SQS/DDB Streams into a validator Lambda; assert no duplicate fills, monotonic sequences, and `region/acceptedAz` alignment between orders and trades).
 * **Availability**: Route 53 health checks remain green; WebSocket connection error rate below threshold.
+* **Phase 1 determinism**: Re-run the same order payload (same idempotency key) and assert the simulator emits the exact same fill/cancel sequence; capture metrics like `SimFillLatency` and `SimFillSuccessRate` for parity comparisons once the real matcher is deployed.
 
 ### Visibility & reports
 
