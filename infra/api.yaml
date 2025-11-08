@@ -32,7 +32,7 @@ Resources:
       Role: !GetAtt ApiRole.Arn
       Runtime: python3.12
       Architectures: [ arm64 ]
-      Handler: handlers.config.handler
+      Handler: handlers.main.handler
       Code:
         S3Bucket: !Ref CodeBucket
         S3Key: !Ref CodeKey
