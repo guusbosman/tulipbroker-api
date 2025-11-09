@@ -1,17 +1,47 @@
 # src/handlers/main.py
 import json
-from . import health, config
+import logging
+from . import health, config, orders
+
+logger = logging.getLogger()
+logger.setLevel(logging.INFO)
 
 def handler(event, context):
-    # HTTP API v2 event
-    path = event.get("rawPath") or event.get("requestContext", {}).get("http", {}).get("path", "")
+    request_context = event.get("requestContext", {})
+    http_info = request_context.get("http", {})
+    path = event.get("rawPath") or http_info.get("path", "")
+    method = http_info.get("method", "UNKNOWN")
+    request_id = request_context.get("requestId") or getattr(context, "aws_request_id", "unknown")
+
+    logger.info(
+        json.dumps(
+            {
+                "event": "RequestReceived",
+                "path": path,
+                "method": method,
+                "requestId": request_id,
+            }
+        )
+    )
     if path == "/health":
         return health.handler(event, context)
     elif path == "/api/config":
         return config.handler(event, context)
-    # default 404
-    return {
+    elif path == "/api/orders":
+        return orders.handler(event, context)
+    response = {
         "statusCode": 404,
         "headers": {"Content-Type": "application/json", "Cache-Control": "no-store"},
         "body": json.dumps({"error": "Not found", "path": path}),
     }
+    logger.info(
+        json.dumps(
+            {
+                "event": "RequestNotFound",
+                "path": path,
+                "method": method,
+                "requestId": request_id,
+            }
+        )
+    )
+    return response

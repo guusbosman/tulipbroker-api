@@ -41,6 +41,8 @@ tulipbroker-api/
 |-----------|---------|---------|
 | `/health` | GET | Basic health check endpoint. |
 | `/api/config` | GET | Returns version, region, and environment metadata. |
+| `/api/orders` | POST | Submits an order and returns the accepted `orderId`. |
+| `/api/orders` | GET | Returns the most recent orders (Phase 1 scan). |
 
 Example response from `/api/config`:
 ```json

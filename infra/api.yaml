@@ -10,6 +10,7 @@ Parameters:
   AppVersion:    { Type: String, Default: "0.1.0" }
   GitSha:        { Type: String, Default: "" }
   BuildTime:     { Type: String, Default: "" }
+  MarketSymbol:  { Type: String, Default: "tulip" }
 
 Resources:
   ApiRole:
@@ -24,6 +25,20 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ApiDataAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Scan
+                Resource: !GetAtt OrdersTable.Arn
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt OrdersQueue.Arn
 
   LambdaFunction:
     Type: AWS::Lambda::Function
@@ -44,6 +59,29 @@ Resources:
           APP_ENV: !Ref Env
           GIT_SHA: !Ref GitSha
           BUILD_TIME: !Ref BuildTime
+          ORDERS_TABLE: !Ref OrdersTable
+          EVENTS_FIFO_URL: !Ref OrdersQueue
+          MARKET_SYMBOL: !Ref MarketSymbol
+
+  OrdersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Project}-${Env}-orders'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+
+  OrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub '${Project}-${Env}-orders.fifo'
+      FifoQueue: true
+      ContentBasedDeduplication: false
+      VisibilityTimeout: 30
 
   HttpApi:
     Type: AWS::ApiGatewayV2::Api
@@ -52,7 +90,7 @@ Resources:
       ProtocolType: HTTP
       CorsConfiguration:
         AllowHeaders: ['*']
-        AllowMethods: ['GET', 'OPTIONS']
+        AllowMethods: ['GET', 'POST', 'OPTIONS']
         AllowOrigins: [!Ref AllowedOrigin]
 
   Integration:
@@ -77,6 +115,20 @@ Resources:
       RouteKey: 'GET /api/config'
       Target: !Sub 'integrations/${Integration}' 
 
+  RouteOrders:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /api/orders'
+      Target: !Sub 'integrations/${Integration}'
+
+  RouteOrdersGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /api/orders'
+      Target: !Sub 'integrations/${Integration}'
+
   Stage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
@@ -95,3 +147,7 @@ Resources:
 Outputs:
   ApiBaseUrl:
     Value: !Sub 'https://${HttpApi}.execute-api.${AWS::Region}.amazonaws.com'
+  OrdersTableName:
+    Value: !Ref OrdersTable
+  OrdersQueueUrl:
+    Value: !Ref OrdersQueue

@@ -13,7 +13,8 @@ APP_VERSION="0.1.0"
 
 ARTIFACT_BUCKET="${PROJECT}-${ENV}-artifacts-$(aws sts get-caller-identity --query Account --output text)-${REGION}"
 ZIP="lambda.zip"
-CODE_KEY="build/lambda-${GIT_SHA}.zip"
+RANDOM_SUFFIX=$(openssl rand -hex 4)
+CODE_KEY="build/lambda-${GIT_SHA}-${RANDOM_SUFFIX}.zip"
 TEMPLATE="infra/api.yaml"
 
 # Clean build dirs
