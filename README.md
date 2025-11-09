@@ -43,6 +43,7 @@ tulipbroker-api/
 | `/api/config` | GET | Returns version, region, and environment metadata. |
 | `/api/orders` | POST | Submits an order and returns the accepted `orderId`. |
 | `/api/orders` | GET | Returns the most recent orders (Phase 1 scan). |
+| `/api/metrics/pulse` | GET | Aggregated order metrics for the UI market pulse chart. |
 
 Example response from `/api/config`:
 ```json

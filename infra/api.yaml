@@ -129,6 +129,13 @@ Resources:
       RouteKey: 'GET /api/orders'
       Target: !Sub 'integrations/${Integration}'
 
+  RoutePulse:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /api/metrics/pulse'
+      Target: !Sub 'integrations/${Integration}'
+
   Stage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
