@@ -33,6 +33,29 @@ def _hash_idempotency(client_id: str, idempotency_key: str) -> str:
     return hashlib.sha256(seed.encode("utf-8")).hexdigest()
 
 
+def _query_order_by_idempotency(table, idempotency_hash: str):
+    try:
+        result = table.query(
+            IndexName="IdempotencyKeyIndex",
+            KeyConditionExpression=Key("idempotencyKey").eq(idempotency_hash),
+            Limit=1,
+        )
+    except ClientError:
+        logger.exception("Failed to query orders by idempotency key")
+        return None, "Failed to query orders"
+    items = result.get("Items", [])
+    return (items[0], None) if items else (None, None)
+
+
+def _order_response_payload(order_item: dict) -> dict:
+    return {
+        "orderId": order_item.get("orderId"),
+        "status": order_item.get("status", "ACCEPTED"),
+        "acceptedAt": order_item.get("acceptedAt"),
+        "market": order_item.get("market", MARKET_SYMBOL),
+    }
+
+
 def handler(event, context):
     request_context = event.get("requestContext", {})
     http_info = request_context.get("http", {})
@@ -152,6 +175,22 @@ def _handle_post(event):
     idempotency_hash = _hash_idempotency(client_id, idempotency_key)
 
     table = dynamodb.Table(ORDERS_TABLE)
+    existing_order, query_error = _query_order_by_idempotency(table, idempotency_hash)
+    if query_error:
+        return _response(500, {"error": query_error})
+    if existing_order:
+        logger.info(
+            json.dumps(
+                {
+                    "event": "OrderReplay",
+                    "clientId": client_id,
+                    "idempotency": idempotency_hash,
+                    "existingOrderId": existing_order.get("orderId"),
+                }
+            )
+        )
+        return _response(200, _order_response_payload(existing_order))
+
     item = {
         "pk": pk,
         "sk": pk,
@@ -169,6 +208,7 @@ def _handle_post(event):
         "simulationSeed": idempotency_hash,
         "env": os.getenv("APP_ENV", "qa"),
         "version": os.getenv("APP_VERSION", "0.0.0"),
+        "market": MARKET_SYMBOL,
     }
 
     try:
@@ -227,10 +267,5 @@ def _handle_post(event):
 
     return _response(
         201,
-        {
-            "orderId": order_id,
-            "status": "ACCEPTED",
-            "acceptedAt": now,
-            "market": MARKET_SYMBOL,
-        },
+        _order_response_payload(item),
     )

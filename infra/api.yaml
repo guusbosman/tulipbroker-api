@@ -34,6 +34,7 @@ Resources:
                 Action:
                   - dynamodb:PutItem
                   - dynamodb:Scan
+                  - dynamodb:Query
                 Resource: !GetAtt OrdersTable.Arn
               - Effect: Allow
                 Action:
@@ -71,9 +72,18 @@ Resources:
       AttributeDefinitions:
         - AttributeName: pk
           AttributeType: S
+        - AttributeName: idempotencyKey
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: IdempotencyKeyIndex
+          KeySchema:
+            - AttributeName: idempotencyKey
+              KeyType: HASH
+          Projection:
+            ProjectionType: ALL
 
   OrdersQueue:
     Type: AWS::SQS::Queue

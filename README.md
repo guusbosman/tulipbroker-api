@@ -133,7 +133,95 @@ To remove the S3 artifact bucket (optional):
 aws s3 rb s3://tulipbroker-api-qa-artifacts-<account>-<region> --force
 ```
 
----
+--- 
+
+## 🖥️ New Laptop Setup
+
+### 1. Prerequisites
+- Docker Desktop or Docker Engine (verify with `docker ps`)
+- Python 3.12+, `python3-venv`, `pip`, `jq`, Git, AWS CLI v2
+- Node.js 20+ and npm (for the UI)
+- Optional: `sam` CLI if you plan to run the API locally via SAM
+
+> Debian/Ubuntu note: avoid the `externally-managed-environment` error by always using a virtual environment before running `pip install`.
+
+### 2. Clone the projects
+```bash
+mkdir -p ~/dev && cd ~/dev
+git clone git@github.com:your-org/tulipbroker-api.git
+git clone git@github.com:your-org/tulipbroker-ui.git
+```
+You should end up with parallel directories: `~/dev/tulipbroker-api` and `~/dev/tulipbroker-ui`.
+
+### 3. API project bootstrap
+```bash
+cd ~/dev/tulipbroker-api
+python3 -m venv .venv
+source .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install localstack awscli-local
+```
+1. **Start Docker** (log out/in if your user is not yet in the `docker` group).
+2. **Launch LocalStack**: `localstack start -d`
+3. **Check LocalStack**:
+   ```bash
+   awslocal sts get-caller-identity
+   awslocal dynamodb list-tables
+   ```
+4. **Deploy the stack inside LocalStack**:
+   ```bash
+   awslocal cloudformation deploy \
+     --stack-name tulipbroker-local \
+     --template-file infra/api.yaml \
+     --capabilities CAPABILITY_IAM \
+     --parameter-overrides Project=tulipbroker-api Env=local
+   ```
+   This creates the DynamoDB table (with the idempotency GSI), SQS FIFO queue, Lambda, and API Gateway endpoints inside LocalStack.
+5. **Discover the local API endpoint**:
+   ```bash
+   awslocal apigatewayv2 get-apis
+   ```
+   Note the `ApiEndpoint` URL for the next steps.
+6. **Exercise the happy path + idempotency**:
+   ```bash
+   ORDER_BODY='{"clientId":"local-test","side":"BUY","price":123.45,"quantity":5,"timeInForce":"GTC","idempotencyKey":"local-demo-001"}'
+   curl -sS -D - -o response.json -H 'Content-Type: application/json' \
+     -X POST "$API_ENDPOINT/api/orders" -d "$ORDER_BODY"
+   curl -sS -D - -o response.json -H 'Content-Type: application/json' \
+     -X POST "$API_ENDPOINT/api/orders" -d "$ORDER_BODY"
+   awslocal dynamodb query \
+     --table-name tulipbroker-api-local-orders \
+     --index-name IdempotencyKeyIndex \
+     --key-condition-expression 'idempotencyKey = :k' \
+     --expression-attribute-values '{":k": {"S": "local-demo-001"}}'
+   ```
+   Expect the first call to return 201 and the second to return 200 with the same `orderId`.
+
+### 4. UI project bootstrap
+```bash
+cd ~/dev/tulipbroker-ui
+npm install
+cp .env.example .env.local
+```
+Set `VITE_API_BASE_URL` inside `.env.local` to the LocalStack API endpoint (or the deployed AWS URL). Then:
+```bash
+npm run dev
+```
+Visit the dev server URL (default `http://localhost:5173`) and confirm the UI can talk to the API.
+
+### 5. Combined smoke test checklist
+1. `docker ps` works.
+2. LocalStack running (`localstack status services` should show `running`).
+3. API stack deployed (use `awslocal cloudformation list-stacks`).
+4. Run API smoke script (two POSTs with the same `idempotencyKey`).
+5. Start UI (`npm run dev`) and load it in the browser.
+
+### 6. Troubleshooting quick hits
+- **Docker permission denied**: `sudo usermod -aG docker $USER && newgrp docker`.
+- **pip “externally managed”**: always install into `.venv`.
+- **LocalStack endpoint URLs**: add optional env vars (e.g., `DYNAMODB_ENDPOINT_URL`) if you need to point `boto3` at LocalStack; by default it will talk to AWS.
+- **Stack cleanup**: `awslocal cloudformation delete-stack --stack-name tulipbroker-local` and `localstack stop` when finished.
 
 ## 🔮 Future Roadmap
 

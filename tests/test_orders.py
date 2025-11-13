@@ -1,0 +1,109 @@
+import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
+from uuid import UUID
+
+import datetime
+import pytest
+
+# Ensure handlers package (under src/) is importable when running pytest
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from handlers import orders  # noqa: E402  (import after sys.path tweak)
+
+
+class FrozenDateTime(datetime.datetime):
+    """Deterministic datetime subclass so utcnow() returns a fixed instant."""
+
+    @classmethod
+    def utcnow(cls):  # noqa: N802  (matching datetime API)
+        return datetime.datetime(2024, 1, 1, 12, 0, 0)
+
+
+class FakeTable:
+    def __init__(self):
+        self.stored_item = None
+
+    def query(self, **kwargs):
+        return {"Items": []}
+
+    def put_item(self, **kwargs):
+        self.stored_item = kwargs
+
+
+class FakeDynamoResource:
+    def __init__(self, table):
+        self._table = table
+
+    def Table(self, name):  # noqa: N802 (match boto3 API)
+        assert name == "orders-table"
+        return self._table
+
+
+class FakeSQSClient:
+    def __init__(self):
+        self.sent_messages = []
+
+    def send_message(self, **kwargs):
+        self.sent_messages.append(kwargs)
+
+
+@pytest.fixture(autouse=True)
+def _env(monkeypatch):
+    monkeypatch.setenv("ORDERS_TABLE", "orders-table")
+    monkeypatch.setenv("EVENTS_FIFO_URL", "https://sqs.test/orders.fifo")
+    monkeypatch.setenv("MARKET_SYMBOL", "tulip")
+    monkeypatch.setattr(orders, "ORDERS_TABLE", "orders-table")
+    monkeypatch.setattr(orders, "EVENTS_FIFO_URL", "https://sqs.test/orders.fifo")
+    monkeypatch.setattr(orders, "MARKET_SYMBOL", "tulip")
+
+
+def test_post_order_happy_path(monkeypatch):
+    table = FakeTable()
+    fake_dynamo = FakeDynamoResource(table)
+    fake_sqs = FakeSQSClient()
+
+    monkeypatch.setattr(orders, "dynamodb", fake_dynamo)
+    monkeypatch.setattr(orders, "sqs", fake_sqs)
+    monkeypatch.setattr(orders, "_query_order_by_idempotency", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(orders.datetime, "datetime", FrozenDateTime, raising=False)
+    monkeypatch.setattr(
+        orders.uuid, "uuid4", lambda: UUID("12345678-1234-5678-1234-567812345678")
+    )
+
+    event = {
+        "requestContext": {"http": {"method": "POST"}},
+        "body": json.dumps(
+            {
+                "clientId": "unit-test",
+                "side": "BUY",
+                "price": 10.5,
+                "quantity": 2,
+                "timeInForce": "GTC",
+                "idempotencyKey": "abc123",
+            }
+        ),
+    }
+
+    response = orders.handler(event, SimpleNamespace(aws_request_id="ctx-123"))
+
+    assert response["statusCode"] == 201
+    payload = json.loads(response["body"])
+    assert payload["orderId"] == "12345678-1234-5678-1234-567812345678"
+    assert payload["status"] == "ACCEPTED"
+    assert payload["market"] == "tulip"
+    assert payload["acceptedAt"] == "2024-01-01T12:00:00Z"
+
+    assert table.stored_item is not None
+    assert table.stored_item["ConditionExpression"] == "attribute_not_exists(pk)"
+    assert table.stored_item["Item"]["status"] == "ACCEPTED"
+
+    assert fake_sqs.sent_messages, "order acceptance should enqueue SQS event"
+    sent_message = fake_sqs.sent_messages[0]
+    assert sent_message["QueueUrl"].endswith("orders.fifo")
+    message_body = json.loads(sent_message["MessageBody"])
+    assert message_body["orderId"] == payload["orderId"]
+    assert message_body["side"] == "BUY"

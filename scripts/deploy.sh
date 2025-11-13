@@ -10,6 +10,14 @@ GIT_SHA=$(git rev-parse --short HEAD 2>/dev/null || echo "local")
 BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 APP_VERSION="0.1.0"
 
+# Run unit tests before packaging/deploying
+echo "==> Running unit tests"
+if [ -d ".venv" ]; then
+  # shellcheck disable=SC1091
+  source .venv/bin/activate
+fi
+pytest tests || { echo "Unit tests failed, aborting deploy"; exit 1; }
+
 
 ARTIFACT_BUCKET="${PROJECT}-${ENV}-artifacts-$(aws sts get-caller-identity --query Account --output text)-${REGION}"
 ZIP="lambda.zip"
