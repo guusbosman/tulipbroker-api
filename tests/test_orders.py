@@ -26,12 +26,16 @@ class FrozenDateTime(datetime.datetime):
 class FakeTable:
     def __init__(self):
         self.stored_item = None
+        self.deleted_keys = []
 
     def query(self, **kwargs):
         return {"Items": []}
 
     def put_item(self, **kwargs):
         self.stored_item = kwargs
+
+    def delete_item(self, **kwargs):
+        self.deleted_keys.append(kwargs)
 
 
 class FakeDynamoResource:
@@ -56,6 +60,8 @@ def _env(monkeypatch):
     monkeypatch.setenv("ORDERS_TABLE", "orders-table")
     monkeypatch.setenv("EVENTS_FIFO_URL", "https://sqs.test/orders.fifo")
     monkeypatch.setenv("MARKET_SYMBOL", "tulip")
+    monkeypatch.setenv("AWS_REGION", "us-east-1")
+    monkeypatch.setenv("AWS_AVAILABILITY_ZONE", "us-east-1c")
     monkeypatch.setattr(orders, "ORDERS_TABLE", "orders-table")
     monkeypatch.setattr(orders, "EVENTS_FIFO_URL", "https://sqs.test/orders.fifo")
     monkeypatch.setattr(orders, "MARKET_SYMBOL", "tulip")
@@ -88,7 +94,9 @@ def test_post_order_happy_path(monkeypatch):
         ),
     }
 
-    response = orders.handler(event, SimpleNamespace(aws_request_id="ctx-123"))
+    response = orders.handler(
+        event, SimpleNamespace(aws_request_id="ctx-123", availability_zone="us-east-1c")
+    )
 
     assert response["statusCode"] == 201
     payload = json.loads(response["body"])
@@ -107,3 +115,49 @@ def test_post_order_happy_path(monkeypatch):
     message_body = json.loads(sent_message["MessageBody"])
     assert message_body["orderId"] == payload["orderId"]
     assert message_body["side"] == "BUY"
+    assert message_body["quantity"] == 2.0
+
+    assert not table.deleted_keys, "successful path should not delete the record"
+
+
+def test_post_order_rolls_back_when_sqs_fails(monkeypatch):
+    table = FakeTable()
+    fake_dynamo = FakeDynamoResource(table)
+
+    def _failing_send(**kwargs):
+        raise orders.ClientError(
+            {"Error": {"Code": "InternalError", "Message": "oops"}}, "SendMessage"
+        )
+
+    monkeypatch.setattr(orders, "dynamodb", fake_dynamo)
+    monkeypatch.setattr(orders, "sqs", SimpleNamespace(send_message=_failing_send))
+    monkeypatch.setattr(orders, "_query_order_by_idempotency", lambda *args, **kwargs: (None, None))
+    monkeypatch.setattr(
+        orders.uuid, "uuid4", lambda: UUID("12345678-1234-5678-1234-567812345678")
+    )
+
+    event = {
+        "requestContext": {"http": {"method": "POST"}},
+        "body": json.dumps(
+            {
+                "clientId": "unit-test",
+                "side": "BUY",
+                "price": 10.5,
+                "quantity": 2,
+                "timeInForce": "GTC",
+                "idempotencyKey": "abc123",
+            }
+        ),
+    }
+
+    response = orders.handler(
+        event, SimpleNamespace(aws_request_id="ctx-123", availability_zone="us-east-1c")
+    )
+
+    assert response["statusCode"] == 502
+    body = json.loads(response["body"])
+    assert body["error"] == "Failed to enqueue order event"
+    assert table.deleted_keys, "failed enqueue should delete the stored order"
+    deleted_key = table.deleted_keys[0]["Key"]
+    assert deleted_key["pk"] == "ORDER#12345678-1234-5678-1234-567812345678"
+    assert deleted_key["sk"] == "ORDER#12345678-1234-5678-1234-567812345678"

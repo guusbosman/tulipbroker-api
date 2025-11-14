@@ -56,6 +56,16 @@ def _order_response_payload(order_item: dict) -> dict:
     }
 
 
+def _resolve_region_and_az(context=None) -> tuple[str, str]:
+    region = os.getenv("AWS_REGION", "unknown")
+    az = os.getenv("AWS_AVAILABILITY_ZONE")
+    if not az and context:
+        az = getattr(context, "availability_zone", None)
+    if not az:
+        az = region
+    return region, az
+
+
 def handler(event, context):
     request_context = event.get("requestContext", {})
     http_info = request_context.get("http", {})
@@ -74,7 +84,7 @@ def handler(event, context):
         )
     )
     if method == "POST":
-        return _handle_post(event)
+        return _handle_post(event, context)
     if method == "GET":
         return _handle_get(event)
     return _response(405, {"error": "Method not allowed"})
@@ -128,7 +138,7 @@ def _handle_get(event):
     return _response(200, {"items": normalized})
 
 
-def _handle_post(event):
+def _handle_post(event, context=None):
     if not ORDERS_TABLE or not EVENTS_FIFO_URL:
         return _response(500, {"error": "Orders infrastructure not configured"})
 
@@ -173,6 +183,7 @@ def _handle_post(event):
     now = datetime.datetime.utcnow().isoformat() + "Z"
     pk = f"ORDER#{order_id}"
     idempotency_hash = _hash_idempotency(client_id, idempotency_key)
+    region, accepted_az = _resolve_region_and_az(context)
 
     table = dynamodb.Table(ORDERS_TABLE)
     existing_order, query_error = _query_order_by_idempotency(table, idempotency_hash)
@@ -202,8 +213,8 @@ def _handle_post(event):
         "timeInForce": time_in_force,
         "status": "ACCEPTED",
         "acceptedAt": now,
-        "region": os.getenv("AWS_REGION", "unknown"),
-        "acceptedAz": os.getenv("AWS_REGION", "unknown"),
+        "region": region,
+        "acceptedAz": accepted_az,
         "idempotencyKey": idempotency_hash,
         "simulationSeed": idempotency_hash,
         "env": os.getenv("APP_ENV", "qa"),
@@ -230,7 +241,7 @@ def _handle_post(event):
         "clientId": client_id,
         "side": side,
         "price": float(price_decimal),
-        "quantity": int(quantity_decimal),
+        "quantity": float(quantity_decimal),
         "timeInForce": time_in_force,
         "acceptedAt": now,
         "market": MARKET_SYMBOL,
@@ -246,6 +257,10 @@ def _handle_post(event):
         )
     except ClientError:
         logger.exception("Failed to enqueue order %s", order_id)
+        try:
+            table.delete_item(Key={"pk": pk, "sk": pk})
+        except ClientError:
+            logger.exception("Rollback delete failed for order %s", order_id)
         return _response(502, {"error": "Failed to enqueue order event"})
 
     logger.info(
