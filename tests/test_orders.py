@@ -22,6 +22,13 @@ class FrozenDateTime(datetime.datetime):
     def utcnow(cls):  # noqa: N802  (matching datetime API)
         return datetime.datetime(2024, 1, 1, 12, 0, 0)
 
+    @classmethod
+    def now(cls, tz=None):
+        base = datetime.datetime(2024, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
+        if tz:
+            return base.astimezone(tz)
+        return base.replace(tzinfo=None)
+
 
 class FakeTable:
     def __init__(self):

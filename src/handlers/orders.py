@@ -180,7 +180,7 @@ def _handle_post(event, context=None):
         return _response(400, {"error": "Validation failed", "details": errors})
 
     order_id = str(uuid.uuid4())
-    now = datetime.datetime.utcnow().isoformat() + "Z"
+    now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     pk = f"ORDER#{order_id}"
     idempotency_hash = _hash_idempotency(client_id, idempotency_key)
     region, accepted_az = _resolve_region_and_az(context)
