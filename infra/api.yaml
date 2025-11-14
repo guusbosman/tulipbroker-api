@@ -4,6 +4,8 @@ Description: TulipBroker API (Lambda + HTTP API Gateway, Python)
 Parameters:
   Project:       { Type: String, Default: tulipbroker-api }
   Env:           { Type: String, Default: qa }
+  Service:       { Type: String, Default: api }
+  Owner:         { Type: String, Default: guus }
   CodeBucket:    { Type: String, Description: 'S3 bucket with Lambda zip' }
   CodeKey:       { Type: String, Description: 'Key of the Lambda zip in CodeBucket' }
   AllowedOrigin: { Type: String, Default: "*" }
@@ -40,6 +42,15 @@ Resources:
                 Action:
                   - sqs:SendMessage
                 Resource: !GetAtt OrdersQueue.Arn
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: Service
+          Value: !Ref Service
+        - Key: Env
+          Value: !Ref Env
+        - Key: Owner
+          Value: !Ref Owner
 
   LambdaFunction:
     Type: AWS::Lambda::Function
@@ -63,6 +74,15 @@ Resources:
           ORDERS_TABLE: !Ref OrdersTable
           EVENTS_FIFO_URL: !Ref OrdersQueue
           MARKET_SYMBOL: !Ref MarketSymbol
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: Service
+          Value: !Ref Service
+        - Key: Env
+          Value: !Ref Env
+        - Key: Owner
+          Value: !Ref Owner
 
   OrdersTable:
     Type: AWS::DynamoDB::Table
@@ -84,6 +104,15 @@ Resources:
               KeyType: HASH
           Projection:
             ProjectionType: ALL
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: Service
+          Value: !Ref Service
+        - Key: Env
+          Value: !Ref Env
+        - Key: Owner
+          Value: !Ref Owner
 
   OrdersQueue:
     Type: AWS::SQS::Queue
@@ -92,6 +121,15 @@ Resources:
       FifoQueue: true
       ContentBasedDeduplication: false
       VisibilityTimeout: 30
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: Service
+          Value: !Ref Service
+        - Key: Env
+          Value: !Ref Env
+        - Key: Owner
+          Value: !Ref Owner
 
   HttpApi:
     Type: AWS::ApiGatewayV2::Api
@@ -102,6 +140,11 @@ Resources:
         AllowHeaders: ['*']
         AllowMethods: ['GET', 'POST', 'OPTIONS']
         AllowOrigins: [!Ref AllowedOrigin]
+      Tags:
+        Project: !Ref Project
+        Service: !Ref Service
+        Env: !Ref Env
+        Owner: !Ref Owner
 
   Integration:
     Type: AWS::ApiGatewayV2::Integration
@@ -152,6 +195,11 @@ Resources:
       ApiId: !Ref HttpApi
       StageName: '$default'
       AutoDeploy: true
+      Tags:
+        Project: !Ref Project
+        Service: !Ref Service
+        Env: !Ref Env
+        Owner: !Ref Owner
 
   Permission:
     Type: AWS::Lambda::Permission
