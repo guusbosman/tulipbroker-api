@@ -35,9 +35,12 @@ Resources:
               - Effect: Allow
                 Action:
                   - dynamodb:PutItem
+                  - dynamodb:UpdateItem
                   - dynamodb:Scan
                   - dynamodb:Query
-                Resource: !GetAtt OrdersTable.Arn
+                Resource:
+                  - !GetAtt OrdersTable.Arn
+                  - !Sub '${OrdersTable.Arn}/index/IdempotencyKeyIndex'
               - Effect: Allow
                 Action:
                   - sqs:SendMessage

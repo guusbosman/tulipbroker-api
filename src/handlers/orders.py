@@ -4,6 +4,7 @@ import uuid
 import hashlib
 import datetime
 import logging
+import time
 from decimal import Decimal
 
 import boto3
@@ -13,7 +14,9 @@ from botocore.exceptions import ClientError
 dynamodb = boto3.resource("dynamodb")
 sqs = boto3.client("sqs")
 logger = logging.getLogger()
-logger.setLevel(logging.DEBUG)
+logger.setLevel(logging.INFO)
+logging.getLogger("botocore").setLevel(logging.WARNING)
+logging.getLogger("boto3").setLevel(logging.WARNING)
 
 ORDERS_TABLE = os.getenv("ORDERS_TABLE")
 EVENTS_FIFO_URL = os.getenv("EVENTS_FIFO_URL")
@@ -40,7 +43,20 @@ def _query_order_by_idempotency(table, idempotency_hash: str):
             KeyConditionExpression=Key("idempotencyKey").eq(idempotency_hash),
             Limit=1,
         )
-    except ClientError:
+    except ClientError as exc:
+        error = exc.response.get("Error", {}) if isinstance(exc.response, dict) else {}
+        error_code = error.get("Code")
+        if error_code in {"ResourceNotFoundException", "ValidationException"}:
+            logger.warning(
+                json.dumps(
+                    {
+                        "event": "IdempotencyIndexUnavailable",
+                        "code": error_code,
+                        "message": error.get("Message"),
+                    }
+                )
+            )
+            return None, None
         logger.exception("Failed to query orders by idempotency key")
         return None, "Failed to query orders"
     items = result.get("Items", [])
@@ -53,6 +69,7 @@ def _order_response_payload(order_item: dict) -> dict:
         "status": order_item.get("status", "ACCEPTED"),
         "acceptedAt": order_item.get("acceptedAt"),
         "market": order_item.get("market", MARKET_SYMBOL),
+        "processingMs": order_item.get("processingMs"),
     }
 
 
@@ -112,6 +129,7 @@ def _handle_get(event):
     # convert Decimals to floats for JSON
     normalized = []
     for item in items:
+        processing_ms = item.get("processingMs")
         normalized.append(
             {
                 "orderId": item.get("orderId"),
@@ -124,6 +142,7 @@ def _handle_get(event):
                 "clientId": item.get("clientId"),
                 "region": item.get("region"),
                 "acceptedAz": item.get("acceptedAz"),
+                "processingMs": float(processing_ms) if processing_ms is not None else None,
             }
         )
 
@@ -139,6 +158,7 @@ def _handle_get(event):
 
 
 def _handle_post(event, context=None):
+    request_started = time.perf_counter()
     if not ORDERS_TABLE or not EVENTS_FIFO_URL:
         return _response(500, {"error": "Orders infrastructure not configured"})
 
@@ -263,6 +283,38 @@ def _handle_post(event, context=None):
             logger.exception("Rollback delete failed for order %s", order_id)
         return _response(502, {"error": "Failed to enqueue order event"})
 
+    processing_ms = int((time.perf_counter() - request_started) * 1000)
+    item["processingMs"] = processing_ms
+    persisted_processing_metric = False
+    try:
+        table.update_item(
+            Key={"pk": pk},
+            UpdateExpression="SET processingMs = :value",
+            ExpressionAttributeValues={":value": Decimal(processing_ms)},
+        )
+        persisted_processing_metric = True
+    except ClientError as exc:
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "ProcessingMetricPersistFailed",
+                    "orderId": order_id,
+                    "error": exc.response.get("Error", {}),
+                }
+            )
+        )
+
+    logger.info(
+        json.dumps(
+            {
+                "event": "ProcessingMetricPersisted",
+                "orderId": order_id,
+                "processingMs": processing_ms,
+                "persisted": persisted_processing_metric,
+            }
+        )
+    )
+
     logger.info(
         json.dumps(
             {
@@ -276,6 +328,7 @@ def _handle_post(event, context=None):
                 "idempotency": idempotency_hash,
                 "market": MARKET_SYMBOL,
                 "acceptedAt": now,
+                "processingMs": processing_ms,
             }
         )
     )

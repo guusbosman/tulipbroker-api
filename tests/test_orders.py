@@ -34,6 +34,7 @@ class FakeTable:
     def __init__(self):
         self.stored_item = None
         self.deleted_keys = []
+        self.updated_items = []
 
     def query(self, **kwargs):
         return {"Items": []}
@@ -43,6 +44,12 @@ class FakeTable:
 
     def delete_item(self, **kwargs):
         self.deleted_keys.append(kwargs)
+
+    def update_item(self, **kwargs):
+        self.updated_items.append(kwargs)
+        if self.stored_item and "Item" in self.stored_item:
+            value = kwargs.get("ExpressionAttributeValues", {}).get(":value")
+            self.stored_item["Item"]["processingMs"] = int(value) if value is not None else None
 
 
 class FakeDynamoResource:
@@ -78,6 +85,7 @@ def test_post_order_happy_path(monkeypatch):
     table = FakeTable()
     fake_dynamo = FakeDynamoResource(table)
     fake_sqs = FakeSQSClient()
+    logged_events = []
 
     monkeypatch.setattr(orders, "dynamodb", fake_dynamo)
     monkeypatch.setattr(orders, "sqs", fake_sqs)
@@ -85,6 +93,11 @@ def test_post_order_happy_path(monkeypatch):
     monkeypatch.setattr(orders.datetime, "datetime", FrozenDateTime, raising=False)
     monkeypatch.setattr(
         orders.uuid, "uuid4", lambda: UUID("12345678-1234-5678-1234-567812345678")
+    )
+    monkeypatch.setattr(
+        orders.logger,
+        "info",
+        lambda message: logged_events.append(json.loads(message)),
     )
 
     event = {
@@ -111,10 +124,13 @@ def test_post_order_happy_path(monkeypatch):
     assert payload["status"] == "ACCEPTED"
     assert payload["market"] == "tulip"
     assert payload["acceptedAt"] == "2024-01-01T12:00:00Z"
+    assert payload["processingMs"] >= 0
 
     assert table.stored_item is not None
     assert table.stored_item["ConditionExpression"] == "attribute_not_exists(pk)"
     assert table.stored_item["Item"]["status"] == "ACCEPTED"
+    assert table.stored_item["Item"]["processingMs"] is not None
+    assert table.updated_items, "processing metric should update Dynamo record"
 
     assert fake_sqs.sent_messages, "order acceptance should enqueue SQS event"
     sent_message = fake_sqs.sent_messages[0]
@@ -125,6 +141,9 @@ def test_post_order_happy_path(monkeypatch):
     assert message_body["quantity"] == 2.0
 
     assert not table.deleted_keys, "successful path should not delete the record"
+    accepted_event = next((evt for evt in logged_events if evt.get("event") == "OrderAccepted"), None)
+    assert accepted_event is not None
+    assert accepted_event["processingMs"] >= 0
 
 
 def test_post_order_rolls_back_when_sqs_fails(monkeypatch):
@@ -168,3 +187,52 @@ def test_post_order_rolls_back_when_sqs_fails(monkeypatch):
     deleted_key = table.deleted_keys[0]["Key"]
     assert deleted_key["pk"] == "ORDER#12345678-1234-5678-1234-567812345678"
     assert deleted_key["sk"] == "ORDER#12345678-1234-5678-1234-567812345678"
+
+
+def test_post_order_succeeds_when_idempotency_index_missing(monkeypatch):
+    class MissingIndexTable(FakeTable):
+        def query(self, **kwargs):
+            raise orders.ClientError(
+                {
+                    "Error": {
+                        "Code": "ResourceNotFoundException",
+                        "Message": "Requested resource not found",
+                    }
+                },
+                "Query",
+            )
+
+    table = MissingIndexTable()
+    fake_dynamo = FakeDynamoResource(table)
+    fake_sqs = FakeSQSClient()
+
+    monkeypatch.setattr(orders, "dynamodb", fake_dynamo)
+    monkeypatch.setattr(orders, "sqs", fake_sqs)
+    monkeypatch.setattr(orders.datetime, "datetime", FrozenDateTime, raising=False)
+    monkeypatch.setattr(
+        orders.uuid, "uuid4", lambda: UUID("12345678-1234-5678-1234-567812345678")
+    )
+
+    event = {
+        "requestContext": {"http": {"method": "POST"}},
+        "body": json.dumps(
+            {
+                "clientId": "unit-test",
+                "side": "BUY",
+                "price": 10.5,
+                "quantity": 2,
+                "timeInForce": "GTC",
+                "idempotencyKey": "abc123",
+            }
+        ),
+    }
+
+    response = orders.handler(
+        event, SimpleNamespace(aws_request_id="ctx-123", availability_zone="us-east-1c")
+    )
+
+    assert response["statusCode"] == 201
+    body = json.loads(response["body"])
+    assert body["status"] == "ACCEPTED"
+    assert table.stored_item is not None
+    assert fake_sqs.sent_messages, "order acceptance should enqueue SQS event"
