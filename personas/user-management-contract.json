@@ -1,0 +1,113 @@
+{
+  "ticket": "TB-202",
+  "summary": "User management CRUD plus avatar metadata for persona-based trading.",
+  "apiVersion": "v0.1-proposal",
+  "endpoints": [
+    {
+      "method": "GET",
+      "path": "/api/users",
+      "description": "List personas with pagination.",
+      "query": [
+        {"name": "limit", "type": "number", "notes": "Max 50; defaults to 20."},
+        {"name": "lastKey", "type": "string", "notes": "Opaque cursor for pagination."}
+      ],
+      "responses": {
+        "200": {"body": {"items": "User[]", "lastKey": "string?"}},
+        "500": {"body": {"error": "Failed to load users"}}
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/users",
+      "description": "Create a persona",
+      "body": {"userId": "slug", "userName": "string", "bio": "string?", "avatarUrl": "string?", "isActive": "boolean?"},
+      "responses": {"201": {"body": "User"}, "409": {"body": {"error": "User already exists"}}}
+    },
+    {
+      "method": "PUT",
+      "path": "/api/users/{userId}",
+      "description": "Update persona fields; path param is authoritative.",
+      "body": {"userName": "string?", "bio": "string?", "avatarUrl": "string?", "isActive": "boolean?"},
+      "responses": {"200": {"body": "User"}, "404": {"body": {"error": "User not found"}}}
+    },
+    {
+      "method": "DELETE",
+      "path": "/api/users/{userId}",
+      "description": "Soft delete a persona; marks it inactive.",
+      "responses": {"200": {"body": {"ok": true}}, "404": {"body": {"error": "User not found"}}}
+    },
+    {
+      "method": "GET",
+      "path": "/api/users/seed",
+      "description": "Returns the three baked-in personas from personas.json to help the UI repopulate local state.",
+      "responses": {"200": {"body": {"items": "User[]"}}}
+    },
+    {
+      "method": "GET",
+      "path": "/api/orders",
+      "description": "Orders include persona metadata from Users table fallback to personas.json",
+      "responses": {"200": {"body": {"items": "OrderWithUser[]"}}}
+    },
+    {
+      "method": "POST",
+      "path": "/api/orders",
+      "description": "Requires userId; rejects unknown userIds.",
+      "responses": {"201": {"body": "OrderWithUser"}, "400": {"body": {"error": "Validation failed"}}, "404": {"body": {"error": "Unknown userId"}}}
+    }
+  ],
+  "models": {
+    "User": {
+      "userId": "string",
+      "userName": "string",
+      "bio": "string",
+      "avatarUrl": "string",
+      "isActive": "boolean",
+      "isDeleted": "boolean",
+      "createdAt": "ISO-8601 string",
+      "updatedAt": "ISO-8601 string"
+    },
+    "OrderWithUser": {
+      "orderId": "string",
+      "side": "BUY|SELL",
+      "price": "number",
+      "quantity": "number",
+      "timeInForce": "string",
+      "status": "string",
+      "acceptedAt": "ISO-8601 string",
+      "region": "string",
+      "acceptedAz": "string",
+      "userId": "string",
+      "userName": "string",
+      "avatarUrl": "string",
+      "bio": "string"
+    }
+  },
+  "infra": {
+    "dynamodb": {
+      "tables": [
+        {
+          "name": "UsersTable",
+          "billingMode": "PAY_PER_REQUEST",
+          "keySchema": {"pk": "pk", "sk": "sk"},
+          "attributes": [
+            {"name": "pk", "type": "S"},
+            {"name": "sk", "type": "S"},
+            {"name": "gsi1pk", "type": "S"},
+            {"name": "gsi1sk", "type": "S"}
+          ],
+          "gsi": [
+            {
+              "name": "UpdatedAtIndex",
+              "partitionKey": "gsi1pk",
+              "sortKey": "gsi1sk",
+              "projection": "ALL"
+            }
+          ]
+        }
+      ]
+    },
+    "lambdaEnv": ["USERS_TABLE"],
+    "iam": ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:DeleteItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:Scan"],
+    "routes": ["GET /api/users", "POST /api/users", "PUT /api/users/{userId}", "DELETE /api/users/{userId}", "GET /api/users/seed"]
+  }
+}
