@@ -1,16 +1,54 @@
 import json
 import sys
+import types
 from pathlib import Path
 from types import SimpleNamespace
 from uuid import UUID
 
 import datetime
+from decimal import Decimal
 import pytest
 
 # Ensure handlers package (under src/) is importable when running pytest
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+boto3_stub = types.ModuleType("boto3")
+boto3_stub.resource = lambda *_args, **_kwargs: SimpleNamespace()
+boto3_stub.client = lambda *_args, **_kwargs: SimpleNamespace()
+sys.modules.setdefault("boto3", boto3_stub)
+
+dynamodb_stub = types.ModuleType("boto3.dynamodb")
+conditions_stub = types.ModuleType("boto3.dynamodb.conditions")
+
+
+class Key:
+    def __init__(self, name):
+        self.name = name
+
+    def eq(self, value):
+        return ("eq", self.name, value)
+
+
+conditions_stub.Key = Key
+sys.modules.setdefault("boto3.dynamodb", dynamodb_stub)
+sys.modules.setdefault("boto3.dynamodb.conditions", conditions_stub)
+
+botocore_stub = types.ModuleType("botocore")
+exceptions_stub = types.ModuleType("botocore.exceptions")
+
+
+class ClientError(Exception):
+    def __init__(self, error_response, operation_name):
+        super().__init__(error_response)
+        self.response = error_response
+        self.operation_name = operation_name
+
+
+exceptions_stub.ClientError = ClientError
+sys.modules.setdefault("botocore", botocore_stub)
+sys.modules.setdefault("botocore.exceptions", exceptions_stub)
 
 from handlers import orders  # noqa: E402  (import after sys.path tweak)
 
@@ -105,6 +143,7 @@ def test_post_order_happy_path(monkeypatch):
         "body": json.dumps(
             {
                 "clientId": "unit-test",
+                "userId": "clusius",
                 "side": "BUY",
                 "price": 10.5,
                 "quantity": 2,
@@ -125,6 +164,8 @@ def test_post_order_happy_path(monkeypatch):
     assert payload["market"] == "tulip"
     assert payload["acceptedAt"] == "2024-01-01T12:00:00Z"
     assert payload["processingMs"] >= 0
+    assert payload["userId"] == "clusius"
+    assert payload["userName"]
 
     assert table.stored_item is not None
     assert table.stored_item["ConditionExpression"] == "attribute_not_exists(pk)"
@@ -139,11 +180,42 @@ def test_post_order_happy_path(monkeypatch):
     assert message_body["orderId"] == payload["orderId"]
     assert message_body["side"] == "BUY"
     assert message_body["quantity"] == 2.0
+    assert message_body["userId"] == "clusius"
 
     assert not table.deleted_keys, "successful path should not delete the record"
     accepted_event = next((evt for evt in logged_events if evt.get("event") == "OrderAccepted"), None)
     assert accepted_event is not None
     assert accepted_event["processingMs"] >= 0
+
+
+def test_post_order_requires_user(monkeypatch):
+    table = FakeTable()
+    fake_dynamo = FakeDynamoResource(table)
+
+    monkeypatch.setattr(orders, "dynamodb", fake_dynamo)
+    monkeypatch.setattr(orders, "_query_order_by_idempotency", lambda *args, **kwargs: (None, None))
+
+    event = {
+        "requestContext": {"http": {"method": "POST"}},
+        "body": json.dumps(
+            {
+                "clientId": "unit-test",
+                "side": "BUY",
+                "price": 10.5,
+                "quantity": 2,
+                "timeInForce": "GTC",
+                "idempotencyKey": "abc123",
+            }
+        ),
+    }
+
+    response = orders.handler(
+        event, SimpleNamespace(aws_request_id="ctx-123", availability_zone="us-east-1c")
+    )
+
+    assert response["statusCode"] == 400
+    details = json.loads(response["body"]).get("details", [])
+    assert "userId is required" in details
 
 
 def test_post_order_rolls_back_when_sqs_fails(monkeypatch):
@@ -167,6 +239,7 @@ def test_post_order_rolls_back_when_sqs_fails(monkeypatch):
         "body": json.dumps(
             {
                 "clientId": "unit-test",
+                "userId": "clusius",
                 "side": "BUY",
                 "price": 10.5,
                 "quantity": 2,
@@ -218,6 +291,7 @@ def test_post_order_succeeds_when_idempotency_index_missing(monkeypatch):
         "body": json.dumps(
             {
                 "clientId": "unit-test",
+                "userId": "clusius",
                 "side": "BUY",
                 "price": 10.5,
                 "quantity": 2,
@@ -236,3 +310,49 @@ def test_post_order_succeeds_when_idempotency_index_missing(monkeypatch):
     assert body["status"] == "ACCEPTED"
     assert table.stored_item is not None
     assert fake_sqs.sent_messages, "order acceptance should enqueue SQS event"
+
+
+def test_get_orders_enriches_persona(monkeypatch):
+    class ScanningTable(FakeTable):
+        def scan(self, **kwargs):
+            return {
+                "Items": [
+                    {
+                        "orderId": "abc",
+                        "userId": "oosterwijck",
+                        "side": "BUY",
+                        "price": Decimal("5"),
+                        "quantity": Decimal("2"),
+                        "status": "ACCEPTED",
+                        "acceptedAt": "2024-01-01T12:00:00Z",
+                        "clientId": "unit-test",
+                        "region": "us-east-1",
+                        "acceptedAz": "us-east-1c",
+                        "processingMs": Decimal("10"),
+                    },
+                    {
+                        "orderId": "def",
+                        "userId": "unknown-user",
+                        "side": "SELL",
+                        "price": Decimal("7"),
+                        "quantity": Decimal("1"),
+                        "status": "ACCEPTED",
+                        "acceptedAt": "2024-01-01T11:00:00Z",
+                        "clientId": "unit-test",
+                        "region": "us-east-1",
+                        "acceptedAz": "us-east-1c",
+                    },
+                ]
+            }
+
+    table = ScanningTable()
+    fake_dynamo = FakeDynamoResource(table)
+    monkeypatch.setattr(orders, "dynamodb", fake_dynamo)
+
+    response = orders.handler({"requestContext": {"http": {"method": "GET"}}}, None)
+
+    assert response["statusCode"] == 200
+    items = json.loads(response["body"]).get("items", [])
+    assert items[0]["userName"] == "Maria van Oosterwijck"
+    assert items[0]["avatarUrl"]
+    assert items[1]["userName"] == "Unknown User"

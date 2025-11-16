@@ -10,6 +10,7 @@ from decimal import Decimal
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+from personas import get_persona
 
 dynamodb = boto3.resource("dynamodb")
 sqs = boto3.client("sqs")
@@ -64,12 +65,17 @@ def _query_order_by_idempotency(table, idempotency_hash: str):
 
 
 def _order_response_payload(order_item: dict) -> dict:
+    persona = get_persona(order_item.get("userId"))
     return {
         "orderId": order_item.get("orderId"),
         "status": order_item.get("status", "ACCEPTED"),
         "acceptedAt": order_item.get("acceptedAt"),
         "market": order_item.get("market", MARKET_SYMBOL),
         "processingMs": order_item.get("processingMs"),
+        "userId": persona.get("userId"),
+        "userName": persona.get("userName"),
+        "avatarUrl": persona.get("avatarUrl"),
+        "bio": persona.get("bio"),
     }
 
 
@@ -130,6 +136,7 @@ def _handle_get(event):
     normalized = []
     for item in items:
         processing_ms = item.get("processingMs")
+        persona = get_persona(item.get("userId"))
         normalized.append(
             {
                 "orderId": item.get("orderId"),
@@ -140,6 +147,10 @@ def _handle_get(event):
                 "status": item.get("status"),
                 "acceptedAt": item.get("acceptedAt"),
                 "clientId": item.get("clientId"),
+                "userId": persona.get("userId"),
+                "userName": persona.get("userName"),
+                "avatarUrl": persona.get("avatarUrl"),
+                "bio": persona.get("bio"),
                 "region": item.get("region"),
                 "acceptedAz": item.get("acceptedAz"),
                 "processingMs": float(processing_ms) if processing_ms is not None else None,
@@ -194,6 +205,9 @@ def _handle_post(event, context=None):
         errors.append("idempotencyKey is required")
 
     client_id = body.get("clientId") or "demo-ui"
+    user_id = body.get("userId")
+    if not user_id or not isinstance(user_id, str):
+        errors.append("userId is required")
     time_in_force = body.get("timeInForce", "GTC")
 
     if errors:
@@ -227,6 +241,7 @@ def _handle_post(event, context=None):
         "sk": pk,
         "orderId": order_id,
         "clientId": client_id,
+        "userId": user_id,
         "side": side,
         "price": price_decimal,
         "quantity": quantity_decimal,
@@ -259,6 +274,7 @@ def _handle_post(event, context=None):
         "type": "OrderAccepted",
         "orderId": order_id,
         "clientId": client_id,
+        "userId": user_id,
         "side": side,
         "price": float(price_decimal),
         "quantity": float(quantity_decimal),
@@ -321,6 +337,7 @@ def _handle_post(event, context=None):
                 "event": "OrderAccepted",
                 "orderId": order_id,
                 "clientId": client_id,
+                "userId": user_id,
                 "side": side,
                 "qty": float(quantity_decimal),
                 "price": float(price_decimal),

@@ -1,0 +1,20 @@
+[
+  {
+    "userId": "clusius",
+    "userName": "Carolus Clusius",
+    "avatarUrl": "/avatars/clusius.png",
+    "bio": "Renaissance botanist who helped popularize tulip cultivation across Europe."
+  },
+  {
+    "userId": "oosterwijck",
+    "userName": "Maria van Oosterwijck",
+    "avatarUrl": "/avatars/oosterwijck.png",
+    "bio": "Dutch flower painter celebrated for richly detailed still lifes featuring tulips."
+  },
+  {
+    "userId": "leeuwenhoek",
+    "userName": "Antonie van Leeuwenhoek",
+    "avatarUrl": "/avatars/leeuwenhoek.png",
+    "bio": "Merchant-scientist and early tulip trader known for his meticulous observations."
+  }
+]
