@@ -125,14 +125,15 @@ def _handle_get(event):
         return _response(400, {"error": "limit must be numeric"})
 
     table = dynamodb.Table(ORDERS_TABLE)
-    # naive scan for now (Phase 1); we can switch to GSI later
     try:
-        result = table.scan(Limit=limit)
+        items = _fetch_recent_orders(table, limit)
     except ClientError:
         logger.exception("Failed to read orders")
         return _response(500, {"error": "Failed to load orders"})
-    items = sorted(result.get("Items", []), key=lambda x: x.get("acceptedAt", ""), reverse=True)
-    # convert Decimals to floats for JSON
+    except Exception:
+        logger.exception("Unexpected error loading orders")
+        return _response(500, {"error": "Failed to load orders"})
+
     normalized = []
     for item in items:
         processing_ms = item.get("processingMs")
@@ -166,6 +167,32 @@ def _handle_get(event):
         )
     )
     return _response(200, {"items": normalized})
+
+
+def _fetch_recent_orders(table, limit: int) -> list[dict]:
+    """Scan DynamoDB in batches, sort by acceptedAt desc, and return the latest items."""
+    # DynamoDB scans have no ordering guarantee. We over-read and then sort client-side so
+    # the caller consistently receives the latest orders first.
+    items: list[dict] = []
+    last_evaluated_key = None
+    # pull more than requested to improve chance of getting the latest ones; cap to avoid runaway scans
+    batch_size = min(max(limit * 2, 25), 200)
+
+    try:
+        while True:
+            scan_kwargs = {"Limit": batch_size}
+            if last_evaluated_key:
+                scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+            result = table.scan(**scan_kwargs)
+            items.extend(result.get("Items", []))
+            last_evaluated_key = result.get("LastEvaluatedKey")
+            if not last_evaluated_key or len(items) >= limit:
+                break
+    except ClientError:
+        raise
+
+    items.sort(key=lambda x: x.get("acceptedAt") or "", reverse=True)
+    return items[:limit]
 
 
 def _handle_post(event, context=None):

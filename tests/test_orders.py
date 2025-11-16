@@ -356,3 +356,59 @@ def test_get_orders_enriches_persona(monkeypatch):
     assert items[0]["userName"] == "Maria van Oosterwijck"
     assert items[0]["avatarUrl"]
     assert items[1]["userName"] == "Unknown User"
+
+
+def test_get_orders_returns_most_recent_first(monkeypatch):
+    class PaginatedTable(FakeTable):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+            self.pages = [
+                {
+                    "Items": [
+                        {
+                            "orderId": "old",
+                            "userId": "clusius",
+                            "side": "BUY",
+                            "price": Decimal("1"),
+                            "quantity": Decimal("1"),
+                            "acceptedAt": "2024-01-01T00:00:00Z",
+                        }
+                    ],
+                    "LastEvaluatedKey": {"pk": "ORDER#old"},
+                },
+                {
+                    "Items": [
+                        {
+                            "orderId": "new",
+                            "userId": "oosterwijck",
+                            "side": "SELL",
+                            "price": Decimal("2"),
+                            "quantity": Decimal("3"),
+                            "acceptedAt": "2024-01-02T00:00:00Z",
+                        }
+                    ],
+                },
+            ]
+
+        def scan(self, **kwargs):
+            page = self.pages[self.calls]
+            self.calls += 1
+            response = {"Items": page["Items"]}
+            if "LastEvaluatedKey" in page:
+                response["LastEvaluatedKey"] = page["LastEvaluatedKey"]
+            return response
+
+    table = PaginatedTable()
+    fake_dynamo = FakeDynamoResource(table)
+    monkeypatch.setattr(orders, "dynamodb", fake_dynamo)
+
+    event = {
+        "requestContext": {"http": {"method": "GET"}},
+        "queryStringParameters": {"limit": "2"},
+    }
+
+    response = orders.handler(event, None)
+    assert response["statusCode"] == 200
+    items = json.loads(response["body"]).get("items", [])
+    assert [item["orderId"] for item in items] == ["new", "old"]
