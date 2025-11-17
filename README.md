@@ -9,8 +9,8 @@ It provides configuration and health endpoints for the TulipBroker UI and is des
 
 | Component | Description |
 |------------|-------------|
-| **AWS Lambda** | Runs the backend Python code (`config`, `health` endpoints). |
-| **API Gateway (HTTP API)** | Exposes public REST endpoints with built-in CORS support. |
+| **AWS Lambda** | Single handler bundle (`health`, `config`, `orders`, `metrics`, `personas`). |
+| **API Gateway (HTTP API)** | Exposes the REST surface (`/health`, `/api/config`, `/api/orders`, `/api/metrics/pulse`, `/api/personas`). |
 | **CloudFormation** | Manages infrastructure as code (IaC). |
 | **S3** | Stores the Lambda deployment package (`lambda.zip`). |
 | **Python 3.12** | Runtime for all backend code. |
@@ -23,8 +23,14 @@ It provides configuration and health endpoints for the TulipBroker UI and is des
 tulipbroker-api/
 ├─ src/
 │  └─ handlers/
+│     ├─ main.py            # Router fan-out for all API paths
 │     ├─ health.py          # GET /health – returns {"status": "ok"}
-│     └─ config.py          # GET /api/config – returns version/env info
+│     ├─ config.py          # GET /api/config – version/env/build metadata
+│     ├─ orders.py          # GET/POST /api/orders – submission + recent history
+│     ├─ metrics.py         # GET /api/metrics/pulse – aggregated market pulse
+│     └─ personas.py        # CRUD /api/personas – manage personas in DynamoDB
+├─ personas/                # Seed persona data shared with the UI
+├─ tests/                   # Pytest suites for orders/personas handlers
 ├─ infra/
 │  └─ api.yaml              # CloudFormation template (Lambda + API Gateway)
 ├─ scripts/
@@ -40,10 +46,15 @@ tulipbroker-api/
 | Endpoint | Method | Purpose |
 |-----------|---------|---------|
 | `/health` | GET | Basic health check endpoint. |
-| `/api/config` | GET | Returns version, region, and environment metadata. |
-| `/api/orders` | POST | Submits an order and returns the accepted `orderId`. |
+| `/api/config` | GET | Returns version, region, commit, and environment metadata. |
+| `/api/orders` | POST | Submits an order, enforces idempotency, returns the accepted `orderId`. |
 | `/api/orders` | GET | Returns the most recent orders (Phase 1 scan). |
 | `/api/metrics/pulse` | GET | Aggregated order metrics for the UI market pulse chart. |
+| `/api/personas` | GET | Lists personas from DynamoDB (falls back to seeds if table missing). |
+| `/api/personas` | POST | Creates a persona; validates `userName`/`userId`, returns 409 on duplicates. |
+| `/api/personas/{userId}` | GET | Retrieves a persona or 404 when missing. |
+| `/api/personas/{userId}` | PUT | Updates a persona; 404 when it does not exist. |
+| `/api/personas/{userId}` | DELETE | Deletes a persona; 404 when it does not exist. |
 
 Example response from `/api/config`:
 ```json
@@ -117,6 +128,10 @@ The Lambda function automatically sets these variables:
 | `AWS_REGION` | `us-east-2` | Lambda region |
 | `GIT_SHA` | `e3a4d21` | Commit hash (set at deploy) |
 | `BUILD_TIME` | `2025-11-07T21:34:00Z` | UTC timestamp of build |
+| `ORDERS_TABLE` | `tulipbroker-api-qa-orders` | DynamoDB table name for orders |
+| `PERSONAS_TABLE` | `tulipbroker-api-qa-personas` | DynamoDB table name for personas |
+| `EVENTS_FIFO_URL` | `https://sqs.../orders.fifo` | FIFO queue for downstream order events |
+| `MARKET_SYMBOL` | `tulip` | Default trading symbol included in responses |
 
 ---
 
@@ -204,7 +219,7 @@ cd ~/dev/tulipbroker-ui
 npm install
 cp .env.example .env.local
 ```
-Set `VITE_API_BASE_URL` inside `.env.local` to the LocalStack API endpoint (or the deployed AWS URL). Then:
+Set `VITE_API_URL` inside `.env.local` to the LocalStack API endpoint (or the deployed AWS URL). Then:
 ```bash
 npm run dev
 ```
@@ -225,8 +240,8 @@ Visit the dev server URL (default `http://localhost:5173`) and confirm the UI ca
 
 ## 🔮 Future Roadmap
 
-- [ ] Add router Lambda (single entrypoint for all endpoints)
-- [ ] Add `/api/version` and `/api/metrics`
+- [ ] Add dedicated trades table + `/api/trades`
+- [ ] Promote simulated fill worker to a matcher service (ECS/EKS)
 - [ ] Integrate with DynamoDB or Aurora Serverless
 - [ ] Add CI/CD workflow (GitHub Actions)
 - [ ] Replace wildcard CORS with domain-based config
