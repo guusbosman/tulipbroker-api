@@ -1,7 +1,7 @@
 # src/handlers/main.py
 import json
 import logging
-from . import health, config, orders, metrics
+from . import health, config, orders, metrics, personas
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -31,6 +31,8 @@ def handler(event, context):
         return orders.handler(event, context)
     elif path == "/api/metrics/pulse":
         return metrics.handler(event, context)
+    elif path == "/api/personas" or path.startswith("/api/personas/"):
+        return personas.handler(event, context)
     response = {
         "statusCode": 404,
         "headers": {"Content-Type": "application/json", "Cache-Control": "no-store"},

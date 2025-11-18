@@ -41,6 +41,7 @@ Resources:
                 Resource:
                   - !GetAtt OrdersTable.Arn
                   - !Sub '${OrdersTable.Arn}/index/IdempotencyKeyIndex'
+                  - !GetAtt PersonasTable.Arn
               - Effect: Allow
                 Action:
                   - sqs:SendMessage
@@ -75,6 +76,7 @@ Resources:
           GIT_SHA: !Ref GitSha
           BUILD_TIME: !Ref BuildTime
           ORDERS_TABLE: !Ref OrdersTable
+          PERSONAS_TABLE: !Ref PersonasTable
           EVENTS_FIFO_URL: !Ref OrdersQueue
           MARKET_SYMBOL: !Ref MarketSymbol
       Tags:
@@ -124,6 +126,27 @@ Resources:
       FifoQueue: true
       ContentBasedDeduplication: false
       VisibilityTimeout: 30
+      Tags:
+        - Key: Project
+          Value: !Ref Project
+        - Key: Service
+          Value: !Ref Service
+        - Key: Env
+          Value: !Ref Env
+        - Key: Owner
+          Value: !Ref Owner
+
+  PersonasTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub '${Project}-${Env}-personas'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userId
+          KeyType: HASH
       Tags:
         - Key: Project
           Value: !Ref Project
@@ -190,6 +213,34 @@ Resources:
     Properties:
       ApiId: !Ref HttpApi
       RouteKey: 'GET /api/metrics/pulse'
+      Target: !Sub 'integrations/${Integration}'
+
+  RoutePersonasGet:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /api/personas'
+      Target: !Sub 'integrations/${Integration}'
+
+  RoutePersonasPost:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /api/personas'
+      Target: !Sub 'integrations/${Integration}'
+
+  RoutePersonasPut:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'PUT /api/personas/{proxy+}'
+      Target: !Sub 'integrations/${Integration}'
+
+  RoutePersonasDelete:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'DELETE /api/personas/{proxy+}'
       Target: !Sub 'integrations/${Integration}'
 
   Stage:
