@@ -77,6 +77,8 @@ Watch: order latency, queued events, trade tape divergence, reconciliation logs.
 
 ## JIRA Ticket Draft — Add Multi-User Personas to TulipBroker (TB-201)
 
+**Status:** ✅ *Implemented* — Persona dropdown, persona-enriched orders, and backend validation are live (see `src/handlers/orders.py`, `tulipbroker-ui/src/PersonaContext.tsx`).
+
 **Summary:**  
 Introduce user personas so Guus can switch between preconfigured traders in the UI, show their profile pictures, and persist the submitting user on every order without adding real authentication.
 
@@ -124,6 +126,8 @@ Introduce user personas so Guus can switch between preconfigured traders in the 
 
 ## JIRA Ticket Draft — User Management & Avatar Uploads (TB-202)
 
+**Status:** ✅ *Implemented* — Settings → Users panel, avatar upload/preview, and `/api/personas` CRUD (DynamoDB-backed) shipped in the current repo.
+
 **Summary:**  
 Add a lightweight “Settings → Users” admin surface in the UI so Guus can create/edit personas (name + avatar). Include guidance for generating stylized avatars inspired by famous tulip figures and decide where to store those assets.
 
@@ -152,6 +156,72 @@ Add a lightweight “Settings → Users” admin surface in the UI so Guus can c
 2. Uploading an avatar immediately shows a preview and stores the file locally.
 3. The main app dropdown reflects new personas without code changes (data-driven).
 4. Docs explain how to regenerate the three seed avatars with prompts + instructions on storing them.
+
+## JIRA Ticket Draft — Per-Persona Cash Balance (TB-203)
+
+**Status:** ⏳ *Not implemented yet* — No balance tables, Lambda, or UI widgets exist in the repo today.
+
+**Intent**
+
+Introduce a resilient cash-balance subsystem so each persona has a ledgered balance that increases when their sell orders fill and decreases when their buy orders fill. The balance should only move once an order reaches “ACCEPTED” status (simulated fill complete in Phase 1). Surface that balance in the UI (dedicated component + Portfolio Overview integration).
+
+### Backend Requirements
+
+1. **Balance storage**
+   - Add a `balances` DynamoDB table (partition key `userId`, sort key `snapshotAt` for optional history) or extend the existing orders table with a `BALANCE#<userId>` PK.
+   - Store fields: `userId`, `currentBalance`, `currency` (`fl`), `updatedAt`, plus optional historical ledger entries (`balanceEvents` stream for analytics).
+
+2. **Mutation workflow**
+   - Order lifecycle today: POST `/api/orders` → Dynamo write → simulated fill (Lambda/SQS) → status transitions.
+   - New step: when an order transitions into `ACCEPTED`, enqueue a `BalanceAdjustment` event (SQS FIFO) describing `{ userId, orderId, side, quantity, price, delta }`.
+   - A dedicated Lambda processes these events:
+     - Calculates `delta = price * quantity` (floats converted to `Decimal`).
+     - For `BUY`, subtract `delta`; for `SELL`, add `delta`.
+     - Uses Dynamo conditional updates to ensure idempotency (check `lastOrderId` attribute matches).
+     - Writes a ledger entry with `reason`, `orderId`, and resulting balance.
+   - Future resilience: replicate balances via Dynamo Streams + Lambda to maintain a warm standby (or move to Global Tables).
+
+3. **Failure handling**
+   - If the balance update fails (conditional check), retry with exponential backoff; DLQ after N attempts.
+   - Balance Lambda must be idempotent—check an `appliedEvents` map keyed by `orderId` before mutating.
+   - Alarms on DLQ depth and balance mismatches.
+
+4. **API surface**
+   - Extend `/api/orders` POST response to include `balanceSnapshot` (optional).
+   - Add new endpoint `/api/balances/{userId}` returning current balance + recent ledger entries.
+   - Authentication: reuse persona context for now; future: enforce IAM/Cognito tokens.
+
+### UI Requirements
+
+1. **Balance widget**
+   - In the header (next to persona dropdown), display “Cash Balance: fl X,XXX” with green/red sparkline of recent movements.
+   - Clicking opens a modal showing the ledger (last 10 adjustments).
+
+2. **Portfolio Overview integration**
+   - Replace hard-coded “Total value” with `holdingsValue + cashBalance`.
+   - Add a stacked bar showing `Cash vs Positions`.
+   - When balance API call fails, surface a warning banner.
+
+3. **Orders workflow**
+   - After placing an order, refresh the balance widget (call `/api/balances/{userId}`).
+   - Show inline message when funds insufficient (future enhancement; out-of-scope for Phase 1).
+
+### Acceptance Criteria
+
+1. `balances` table created (CloudFormation) with Lambda consumer + DLQ.
+2. Balance updates occur exactly once per accepted order; retries/dlq instrumentation in place.
+3. UI header shows live balance for active persona; Portfolio Overview adds cash to totals.
+4. README / architecture docs updated with sequence diagrams + operational notes.
+
+### Sequence Diagram (conceptual)
+
+```
+Client -> API POST /orders -> Dynamo (order record)
+OrderAccepted event -> SQS FIFO -> Balance Lambda
+Balance Lambda -> Dynamo (conditional update on balance row)
+Balance Lambda -> emits BalanceUpdated -> (optional) notify UI via SSE/WebSocket
+UI -> GET /api/balances/{userId} -> display cash widget + Portfolio total
+```
 
 **Asset storage proposal**
 
