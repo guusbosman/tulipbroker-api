@@ -41,6 +41,7 @@ Resources:
                 Resource:
                   - !GetAtt OrdersTable.Arn
                   - !Sub '${OrdersTable.Arn}/index/IdempotencyKeyIndex'
+                  - !Sub '${OrdersTable.Arn}/index/RecentOrdersIndex'
                   - !GetAtt PersonasTable.Arn
               - Effect: Allow
                 Action:
@@ -99,6 +100,10 @@ Resources:
           AttributeType: S
         - AttributeName: idempotencyKey
           AttributeType: S
+        - AttributeName: entity
+          AttributeType: S
+        - AttributeName: acceptedAt
+          AttributeType: S
       KeySchema:
         - AttributeName: pk
           KeyType: HASH
@@ -107,6 +112,14 @@ Resources:
           KeySchema:
             - AttributeName: idempotencyKey
               KeyType: HASH
+          Projection:
+            ProjectionType: ALL
+        - IndexName: RecentOrdersIndex
+          KeySchema:
+            - AttributeName: entity
+              KeyType: HASH
+            - AttributeName: acceptedAt
+              KeyType: RANGE
           Projection:
             ProjectionType: ALL
       Tags:

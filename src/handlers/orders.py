@@ -170,7 +170,23 @@ def _handle_get(event):
 
 
 def _fetch_recent_orders(table, limit: int) -> list[dict]:
-    """Scan DynamoDB in batches, sort by acceptedAt desc, and return the latest items."""
+    """Fetch recent orders via GSI when available, otherwise fall back to a scan."""
+    try:
+        result = table.query(
+            IndexName="RecentOrdersIndex",
+            KeyConditionExpression=Key("entity").eq("ORDER"),
+            ScanIndexForward=False,
+            Limit=limit,
+        )
+        items = result.get("Items", [])
+        if items:
+            return items
+    except ClientError as exc:
+        error = exc.response.get("Error", {}) if isinstance(exc.response, dict) else {}
+        error_code = error.get("Code")
+        if error_code not in {"ResourceNotFoundException", "ValidationException"}:
+            raise
+
     # DynamoDB scans have no ordering guarantee. We over-read and then sort client-side so
     # the caller consistently receives the latest orders first.
     items: list[dict] = []
@@ -178,18 +194,15 @@ def _fetch_recent_orders(table, limit: int) -> list[dict]:
     # pull more than requested to improve chance of getting the latest ones; cap to avoid runaway scans
     batch_size = min(max(limit * 2, 25), 200)
 
-    try:
-        while True:
-            scan_kwargs = {"Limit": batch_size}
-            if last_evaluated_key:
-                scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
-            result = table.scan(**scan_kwargs)
-            items.extend(result.get("Items", []))
-            last_evaluated_key = result.get("LastEvaluatedKey")
-            if not last_evaluated_key or len(items) >= limit:
-                break
-    except ClientError:
-        raise
+    while True:
+        scan_kwargs = {"Limit": batch_size}
+        if last_evaluated_key:
+            scan_kwargs["ExclusiveStartKey"] = last_evaluated_key
+        result = table.scan(**scan_kwargs)
+        items.extend(result.get("Items", []))
+        last_evaluated_key = result.get("LastEvaluatedKey")
+        if not last_evaluated_key or len(items) >= limit:
+            break
 
     items.sort(key=lambda x: x.get("acceptedAt") or "", reverse=True)
     return items[:limit]
@@ -243,6 +256,7 @@ def _handle_post(event, context=None):
     order_id = str(uuid.uuid4())
     now = datetime.datetime.now(datetime.UTC).isoformat().replace("+00:00", "Z")
     pk = f"ORDER#{order_id}"
+    entity = "ORDER"
     idempotency_hash = _hash_idempotency(client_id, idempotency_key)
     region, accepted_az = _resolve_region_and_az(context)
 
@@ -266,6 +280,7 @@ def _handle_post(event, context=None):
     item = {
         "pk": pk,
         "sk": pk,
+        "entity": entity,
         "orderId": order_id,
         "clientId": client_id,
         "userId": user_id,
