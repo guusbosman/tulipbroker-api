@@ -22,6 +22,7 @@ logging.getLogger("boto3").setLevel(logging.WARNING)
 ORDERS_TABLE = os.getenv("ORDERS_TABLE")
 EVENTS_FIFO_URL = os.getenv("EVENTS_FIFO_URL")
 MARKET_SYMBOL = os.getenv("MARKET_SYMBOL", "tulip")
+ORDERS_BACKEND = os.getenv("ORDERS_BACKEND", "dynamodb").strip().lower()
 
 
 def _response(status: int, body: dict):
@@ -113,7 +114,22 @@ def handler(event, context):
     return _response(405, {"error": "Method not allowed"})
 
 
+def _resolve_backend(event) -> str:
+    params = event.get("queryStringParameters") or {}
+    if isinstance(params, dict):
+        override = params.get("backend")
+        if override:
+            return str(override).strip().lower()
+    return ORDERS_BACKEND
+
+
 def _handle_get(event):
+    backend = _resolve_backend(event)
+    if backend != "dynamodb":
+        return _response(
+            501,
+            {"error": f"Orders backend '{backend}' has not been implemented yet"},
+        )
     if not ORDERS_TABLE:
         return _response(500, {"error": "Orders infrastructure not configured"})
 
@@ -209,6 +225,12 @@ def _fetch_recent_orders(table, limit: int) -> list[dict]:
 
 
 def _handle_post(event, context=None):
+    backend = _resolve_backend(event)
+    if backend != "dynamodb":
+        return _response(
+            501,
+            {"error": f"Orders backend '{backend}' has not been implemented yet"},
+        )
     request_started = time.perf_counter()
     if not ORDERS_TABLE or not EVENTS_FIFO_URL:
         return _response(500, {"error": "Orders infrastructure not configured"})

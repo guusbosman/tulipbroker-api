@@ -4,6 +4,7 @@ import datetime
 import logging
 
 import boto3
+from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 dynamodb = boto3.resource("dynamodb")
@@ -12,6 +13,7 @@ logger.setLevel(logging.INFO)
 
 ORDERS_TABLE = os.getenv("ORDERS_TABLE")
 PULSE_SAMPLE_LIMIT = int(os.getenv("PULSE_SAMPLE_LIMIT", "200"))
+ORDERS_BACKEND = os.getenv("ORDERS_BACKEND", "dynamodb").strip().lower()
 
 
 def _response(status: int, body: dict):
@@ -34,15 +36,32 @@ def _parse_ts(value: str):
 
 
 def handler(event, context):
+    params = event.get("queryStringParameters") or {}
+    backend = ORDERS_BACKEND
+    if isinstance(params, dict) and params.get("backend"):
+        backend = str(params.get("backend")).strip().lower()
+    if backend != "dynamodb":
+        return _response(
+            501,
+            {"error": f"Orders backend '{backend}' has not been implemented yet"},
+        )
     if not ORDERS_TABLE:
         return _response(500, {"error": "Orders table not configured"})
 
     table = dynamodb.Table(ORDERS_TABLE)
     try:
-        result = table.scan(Limit=PULSE_SAMPLE_LIMIT)
+        result = table.query(
+            IndexName="RecentOrdersIndex",
+            KeyConditionExpression=Key("entity").eq("ORDER"),
+            ScanIndexForward=False,
+            Limit=PULSE_SAMPLE_LIMIT,
+        )
     except ClientError:
-        logger.exception("Failed to scan orders for market pulse")
-        return _response(500, {"error": "Unable to compute pulse"})
+        try:
+            result = table.scan(Limit=PULSE_SAMPLE_LIMIT)
+        except ClientError:
+            logger.exception("Failed to scan orders for market pulse")
+            return _response(500, {"error": "Unable to compute pulse"})
 
     items = result.get("Items", [])
     minutes = {}
