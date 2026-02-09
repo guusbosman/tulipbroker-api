@@ -8,6 +8,7 @@
 
 - Favor managed services and Lambda where possible, with Python as the primary runtime.
 - Design for multi-Region resilience even while operating a single market.
+- Keep storage abstractions flexible so we can play around with multiple database backends (for example DynamoDB and Yugabyte) and compare trade-offs over time.
 
 ## Phase Roadmap
 

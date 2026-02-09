@@ -7,6 +7,7 @@
 ## 1) Domain & Scope
 - Simulates a **brokerage order entry + matching** pipeline for a single instrument (extendable to many).
 - Not real money. Focus: **resiliency, consistency, latency** under multi‑AZ / multi‑Region deployments.
+- Supports experimentation with different database backends (including DynamoDB and Yugabyte) while preserving the same API and invariants.
 
 ## 2) Core Concepts
 - **Order**: { orderId, clientId, idempotencyKey, side(BUY|SELL), qty, price, timeInForce(GTC|IOC), ts }
