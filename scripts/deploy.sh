@@ -29,8 +29,8 @@ TEMPLATE="infra/api.yaml"
 rm -rf build/package build/lambda.zip
 mkdir -p build/package
 
-# (Optional) include dependencies
-# pip install -r requirements.txt -t build/package
+# Include dependencies
+python3 -m pip install -r requirements.txt -t build/package
 
 # Copy app code to package root (NO leading "src/")
 cp -R src/* build/package/

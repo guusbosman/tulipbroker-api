@@ -6,6 +6,7 @@ import logging
 import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
+from . import orders_yugabyte
 
 dynamodb = boto3.resource("dynamodb")
 logger = logging.getLogger()
@@ -40,30 +41,32 @@ def handler(event, context):
     backend = ORDERS_BACKEND
     if isinstance(params, dict) and params.get("backend"):
         backend = str(params.get("backend")).strip().lower()
-    if backend != "dynamodb":
-        return _response(
-            501,
-            {"error": f"Orders backend '{backend}' has not been implemented yet"},
-        )
     if not ORDERS_TABLE:
         return _response(500, {"error": "Orders table not configured"})
 
-    table = dynamodb.Table(ORDERS_TABLE)
-    try:
-        result = table.query(
-            IndexName="RecentOrdersIndex",
-            KeyConditionExpression=Key("entity").eq("ORDER"),
-            ScanIndexForward=False,
-            Limit=PULSE_SAMPLE_LIMIT,
-        )
-    except ClientError:
+    if backend == "yugabyte":
         try:
-            result = table.scan(Limit=PULSE_SAMPLE_LIMIT)
-        except ClientError:
-            logger.exception("Failed to scan orders for market pulse")
+            items = orders_yugabyte.fetch_recent_orders(PULSE_SAMPLE_LIMIT)
+        except Exception:
+            logger.exception("Failed to read orders for market pulse from YugabyteDB")
             return _response(500, {"error": "Unable to compute pulse"})
+    else:
+        table = dynamodb.Table(ORDERS_TABLE)
+        try:
+            result = table.query(
+                IndexName="RecentOrdersIndex",
+                KeyConditionExpression=Key("entity").eq("ORDER"),
+                ScanIndexForward=False,
+                Limit=PULSE_SAMPLE_LIMIT,
+            )
+        except ClientError:
+            try:
+                result = table.scan(Limit=PULSE_SAMPLE_LIMIT)
+            except ClientError:
+                logger.exception("Failed to scan orders for market pulse")
+                return _response(500, {"error": "Unable to compute pulse"})
 
-    items = result.get("Items", [])
+        items = result.get("Items", [])
     minutes = {}
     latest_item = None
     total_buys = total_sells = 0

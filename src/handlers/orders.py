@@ -11,6 +11,7 @@ import boto3
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 from personas import get_persona
+from . import orders_yugabyte
 
 dynamodb = boto3.resource("dynamodb")
 sqs = boto3.client("sqs")
@@ -125,11 +126,6 @@ def _resolve_backend(event) -> str:
 
 def _handle_get(event):
     backend = _resolve_backend(event)
-    if backend != "dynamodb":
-        return _response(
-            501,
-            {"error": f"Orders backend '{backend}' has not been implemented yet"},
-        )
     if not ORDERS_TABLE:
         return _response(500, {"error": "Orders infrastructure not configured"})
 
@@ -140,15 +136,22 @@ def _handle_get(event):
     except ValueError:
         return _response(400, {"error": "limit must be numeric"})
 
-    table = dynamodb.Table(ORDERS_TABLE)
-    try:
-        items = _fetch_recent_orders(table, limit)
-    except ClientError:
-        logger.exception("Failed to read orders")
-        return _response(500, {"error": "Failed to load orders"})
-    except Exception:
-        logger.exception("Unexpected error loading orders")
-        return _response(500, {"error": "Failed to load orders"})
+    if backend == "yugabyte":
+        try:
+            items = orders_yugabyte.fetch_recent_orders(limit)
+        except Exception:
+            logger.exception("Failed to read orders from YugabyteDB")
+            return _response(500, {"error": "Failed to load orders"})
+    else:
+        table = dynamodb.Table(ORDERS_TABLE)
+        try:
+            items = _fetch_recent_orders(table, limit)
+        except ClientError:
+            logger.exception("Failed to read orders")
+            return _response(500, {"error": "Failed to load orders"})
+        except Exception:
+            logger.exception("Unexpected error loading orders")
+            return _response(500, {"error": "Failed to load orders"})
 
     normalized = []
     for item in items:
@@ -226,11 +229,6 @@ def _fetch_recent_orders(table, limit: int) -> list[dict]:
 
 def _handle_post(event, context=None):
     backend = _resolve_backend(event)
-    if backend != "dynamodb":
-        return _response(
-            501,
-            {"error": f"Orders backend '{backend}' has not been implemented yet"},
-        )
     request_started = time.perf_counter()
     if not ORDERS_TABLE or not EVENTS_FIFO_URL:
         return _response(500, {"error": "Orders infrastructure not configured"})
@@ -282,22 +280,45 @@ def _handle_post(event, context=None):
     idempotency_hash = _hash_idempotency(client_id, idempotency_key)
     region, accepted_az = _resolve_region_and_az(context)
 
-    table = dynamodb.Table(ORDERS_TABLE)
-    existing_order, query_error = _query_order_by_idempotency(table, idempotency_hash)
-    if query_error:
-        return _response(500, {"error": query_error})
-    if existing_order:
-        logger.info(
-            json.dumps(
-                {
-                    "event": "OrderReplay",
-                    "clientId": client_id,
-                    "idempotency": idempotency_hash,
-                    "existingOrderId": existing_order.get("orderId"),
-                }
+    if backend == "yugabyte":
+        try:
+            existing_order = orders_yugabyte.get_by_idempotency(
+                client_id, idempotency_hash
             )
+        except Exception:
+            logger.exception("Failed to query YugabyteDB by idempotency key")
+            return _response(500, {"error": "Failed to query orders"})
+        if existing_order:
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "OrderReplay",
+                        "clientId": client_id,
+                        "idempotency": idempotency_hash,
+                        "existingOrderId": existing_order.get("orderId"),
+                    }
+                )
+            )
+            return _response(200, _order_response_payload(existing_order))
+    else:
+        table = dynamodb.Table(ORDERS_TABLE)
+        existing_order, query_error = _query_order_by_idempotency(
+            table, idempotency_hash
         )
-        return _response(200, _order_response_payload(existing_order))
+        if query_error:
+            return _response(500, {"error": query_error})
+        if existing_order:
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "OrderReplay",
+                        "clientId": client_id,
+                        "idempotency": idempotency_hash,
+                        "existingOrderId": existing_order.get("orderId"),
+                    }
+                )
+            )
+            return _response(200, _order_response_payload(existing_order))
 
     item = {
         "pk": pk,
@@ -321,18 +342,44 @@ def _handle_post(event, context=None):
         "market": MARKET_SYMBOL,
     }
 
-    try:
-        table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
-    except ClientError as exc:
-        if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
-            logger.warning(
-                json.dumps(
-                    {"event": "OrderDuplicate", "orderId": order_id, "clientId": client_id}
-                )
+    if backend == "yugabyte":
+        try:
+            item = orders_yugabyte.insert_order(
+                {
+                    "orderId": order_id,
+                    "clientId": client_id,
+                    "idempotencyKey": idempotency_hash,
+                    "userId": user_id,
+                    "side": side,
+                    "price": float(price_decimal),
+                    "quantity": float(quantity_decimal),
+                    "timeInForce": time_in_force,
+                    "status": "ACCEPTED",
+                    "acceptedAt": now,
+                    "region": region,
+                    "acceptedAz": accepted_az,
+                    "processingMs": None,
+                    "market": MARKET_SYMBOL,
+                    "env": os.getenv("APP_ENV", "qa"),
+                    "version": os.getenv("APP_VERSION", "0.0.0"),
+                }
             )
-            return _response(409, {"error": "Order already exists"})
-        logger.exception("Failed to persist order %s", order_id)
-        return _response(500, {"error": "Failed to store order"})
+        except Exception:
+            logger.exception("Failed to persist order %s in YugabyteDB", order_id)
+            return _response(500, {"error": "Failed to store order"})
+    else:
+        try:
+            table.put_item(Item=item, ConditionExpression="attribute_not_exists(pk)")
+        except ClientError as exc:
+            if exc.response["Error"]["Code"] == "ConditionalCheckFailedException":
+                logger.warning(
+                    json.dumps(
+                        {"event": "OrderDuplicate", "orderId": order_id, "clientId": client_id}
+                    )
+                )
+                return _response(409, {"error": "Order already exists"})
+            logger.exception("Failed to persist order %s", order_id)
+            return _response(500, {"error": "Failed to store order"})
 
     message = {
         "type": "OrderAccepted",
@@ -357,32 +404,53 @@ def _handle_post(event, context=None):
         )
     except ClientError:
         logger.exception("Failed to enqueue order %s", order_id)
-        try:
-            table.delete_item(Key={"pk": pk, "sk": pk})
-        except ClientError:
-            logger.exception("Rollback delete failed for order %s", order_id)
+        if backend == "yugabyte":
+            try:
+                orders_yugabyte.delete_order(order_id)
+            except Exception:
+                logger.exception("Rollback delete failed for order %s", order_id)
+        else:
+            try:
+                table.delete_item(Key={"pk": pk, "sk": pk})
+            except ClientError:
+                logger.exception("Rollback delete failed for order %s", order_id)
         return _response(502, {"error": "Failed to enqueue order event"})
 
     processing_ms = int((time.perf_counter() - request_started) * 1000)
     item["processingMs"] = processing_ms
     persisted_processing_metric = False
-    try:
-        table.update_item(
-            Key={"pk": pk},
-            UpdateExpression="SET processingMs = :value",
-            ExpressionAttributeValues={":value": Decimal(processing_ms)},
-        )
-        persisted_processing_metric = True
-    except ClientError as exc:
-        logger.warning(
-            json.dumps(
-                {
-                    "event": "ProcessingMetricPersistFailed",
-                    "orderId": order_id,
-                    "error": exc.response.get("Error", {}),
-                }
+    if backend == "yugabyte":
+        try:
+            orders_yugabyte.update_processing_ms(order_id, processing_ms)
+            persisted_processing_metric = True
+        except Exception:
+            logger.warning(
+                json.dumps(
+                    {
+                        "event": "ProcessingMetricPersistFailed",
+                        "orderId": order_id,
+                        "error": "Yugabyte",
+                    }
+                )
             )
-        )
+    else:
+        try:
+            table.update_item(
+                Key={"pk": pk},
+                UpdateExpression="SET processingMs = :value",
+                ExpressionAttributeValues={":value": Decimal(processing_ms)},
+            )
+            persisted_processing_metric = True
+        except ClientError as exc:
+            logger.warning(
+                json.dumps(
+                    {
+                        "event": "ProcessingMetricPersistFailed",
+                        "orderId": order_id,
+                        "error": exc.response.get("Error", {}),
+                    }
+                )
+            )
 
     logger.info(
         json.dumps(

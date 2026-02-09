@@ -63,7 +63,7 @@ Resources:
       FunctionName: !Sub '${Project}-${Env}'
       Role: !GetAtt ApiRole.Arn
       Runtime: python3.12
-      Architectures: [ arm64 ]
+      Architectures: [ x86_64 ]
       Handler: handlers.main.handler
       Code:
         S3Bucket: !Ref CodeBucket
@@ -80,6 +80,11 @@ Resources:
           PERSONAS_TABLE: !Ref PersonasTable
           EVENTS_FIFO_URL: !Ref OrdersQueue
           MARKET_SYMBOL: !Ref MarketSymbol
+          YB_HOST: "34.186.226.3"
+          YB_PORT: "5433"
+          YB_DB: "tulipbroker"
+          YB_USER: "yugabyte"
+          YB_PASSWORD: "yugabyte"
       Tags:
         - Key: Project
           Value: !Ref Project
