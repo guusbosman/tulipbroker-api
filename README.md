@@ -14,6 +14,7 @@ It provides configuration and health endpoints for the TulipBroker UI and is des
 | **CloudFormation** | Manages infrastructure as code (IaC). |
 | **S3** | Stores the Lambda deployment package (`lambda.zip`). |
 | **Python 3.12** | Runtime for all backend code. |
+| **DynamoDB + Yugabyte** | Orders can be backed by DynamoDB (default) or Yugabyte (configurable per request). |
 
 ---
 
@@ -27,6 +28,7 @@ tulipbroker-api/
 │     ├─ health.py          # GET /health – returns {"status": "ok"}
 │     ├─ config.py          # GET /api/config – version/env/build metadata
 │     ├─ orders.py          # GET/POST /api/orders – submission + recent history
+│     ├─ orders_yugabyte.py # Yugabyte-backed orders implementation
 │     ├─ metrics.py         # GET /api/metrics/pulse – aggregated market pulse
 │     └─ personas.py        # CRUD /api/personas – manage personas in DynamoDB
 ├─ personas/                # Seed persona data shared with the UI
@@ -35,6 +37,7 @@ tulipbroker-api/
 │  └─ api.yaml              # CloudFormation template (Lambda + API Gateway)
 ├─ scripts/
 │  └─ deploy.sh             # Build + upload + deploy automation script
+│  └─ yb-schema.sql          # Yugabyte schema for tulipbroker orders
 ├─ requirements.txt         # Optional dependencies
 └─ README.md                # This file
 ```
@@ -48,13 +51,44 @@ tulipbroker-api/
 | `/health` | GET | Basic health check endpoint. |
 | `/api/config` | GET | Returns version, region, commit, and environment metadata. |
 | `/api/orders` | POST | Submits an order, enforces idempotency, returns the accepted `orderId`. |
-| `/api/orders` | GET | Returns the most recent orders (Phase 1 scan). |
-| `/api/metrics/pulse` | GET | Aggregated order metrics for the UI market pulse chart. |
+| `/api/orders` | GET | Returns the most recent orders. Supports `?backend=dynamodb|yugabyte`. |
+| `/api/metrics/pulse` | GET | Aggregated order metrics for the UI market pulse chart. Supports `?backend=dynamodb|yugabyte`. |
 | `/api/personas` | GET | Lists personas from DynamoDB (falls back to seeds if table missing). |
 | `/api/personas` | POST | Creates a persona; validates `userName`/`userId`, returns 409 on duplicates. |
 | `/api/personas/{userId}` | GET | Retrieves a persona or 404 when missing. |
 | `/api/personas/{userId}` | PUT | Updates a persona; 404 when it does not exist. |
 | `/api/personas/{userId}` | DELETE | Deletes a persona; 404 when it does not exist. |
+
+---
+
+## 🗺️ AWS + GCP Dependencies (Visual)
+
+```mermaid
+flowchart LR
+  subgraph AWS["AWS (us-east-2)"]
+    UI["TulipBroker UI (S3 + CloudFront)"]
+    API["API Gateway (HTTP API)"]
+    L["Lambda (Python 3.12)"]
+    DDB["DynamoDB (orders/personas)"]
+    SQS["SQS FIFO (order events)"]
+  end
+
+  subgraph GCP["GCP (us-east5)"]
+    LB["TCP LB :5433"]
+    YB1["YugabyteDB node1"]
+    YB2["YugabyteDB node2"]
+    YB3["YugabyteDB node3"]
+  end
+
+  UI --> API
+  API --> L
+  L --> DDB
+  L --> SQS
+  L --> LB
+  LB --> YB1
+  LB --> YB2
+  LB --> YB3
+```
 
 Example response from `/api/config`:
 ```json
@@ -132,6 +166,11 @@ The Lambda function automatically sets these variables:
 | `PERSONAS_TABLE` | `tulipbroker-api-qa-personas` | DynamoDB table name for personas |
 | `EVENTS_FIFO_URL` | `https://sqs.../orders.fifo` | FIFO queue for downstream order events |
 | `MARKET_SYMBOL` | `tulip` | Default trading symbol included in responses |
+| `YB_HOST` | `34.186.226.3` | Yugabyte YSQL host (TCP LB or node IP) |
+| `YB_PORT` | `5433` | Yugabyte YSQL port |
+| `YB_DB` | `tulipbroker` | Yugabyte database name |
+| `YB_USER` | `yugabyte` | Yugabyte user |
+| `YB_PASSWORD` | `yugabyte` | Yugabyte password |
 
 ---
 
