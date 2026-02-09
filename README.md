@@ -3,6 +3,8 @@
 **TulipBroker API** is a lightweight Python backend deployed on **AWS Lambda** and exposed via **Amazon API Gateway (HTTP API)**.  
 It provides configuration and health endpoints for the TulipBroker UI and is designed to scale serverlessly with minimal maintenance.
 
+> Project goal: this app is intentionally built to let us play around with different database backends (for example, DynamoDB and Yugabyte) so we can compare behavior, reliability, and developer experience.
+
 ---
 
 ## 🚀 Overview
